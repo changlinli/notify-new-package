@@ -6,20 +6,27 @@ import java.security.{KeyFactory, KeyStore, PrivateKey, SecureRandom}
 import java.security.cert.Certificate
 import java.security.spec.PKCS8EncodedKeySpec
 
-import cats.data.NonEmptyList
+import cats.data.{Kleisli, NonEmptyList}
 import cats.effect.{Blocker, ConcurrentEffect, ExitCode, IO, IOApp}
+import cats.implicits._
 import dev.profunktor.fs2rabbit.Blah
 import dev.profunktor.fs2rabbit.config.declaration.{AutoDelete, DeclarationQueueConfig, NonDurable, NonExclusive}
 import dev.profunktor.fs2rabbit.config.{Fs2RabbitConfig, Fs2RabbitNodeConfig}
+import dev.profunktor.fs2rabbit.effects.EnvelopeDecoder
+import dev.profunktor.fs2rabbit.json.Fs2JsonDecoder
 import dev.profunktor.fs2rabbit.interpreter.{ConnectionEffect, Fs2Rabbit}
-import dev.profunktor.fs2rabbit.model.{ExchangeName, ExchangeType, QueueName, RoutingKey}
+import dev.profunktor.fs2rabbit.model.{AmqpEnvelope, ExchangeName, ExchangeType, QueueName, RoutingKey}
 import fs2.text
+import io.circe.Decoder.Result
+import io.circe.{Decoder, HCursor, Json}
 import javax.net.ssl.{KeyManagerFactory, SSLContext, TrustManagerFactory}
 import org.bouncycastle.asn1.pkcs.PrivateKeyInfo
 import org.bouncycastle.jcajce.provider.asymmetric.x509.CertificateFactory
 import org.bouncycastle.openssl.PEMParser
 import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter
 import org.bouncycastle.util.io.pem.PemObjectParser
+
+import scala.language.higherKinds
 
 object Main extends IOApp {
   val config = Fs2RabbitConfig(
@@ -41,6 +48,16 @@ object Main extends IOApp {
       keyStore.load(keyStoreStream, "PASSWORD".toCharArray)
       keyStore
     }
+  }
+
+  implicit def myJsonDecoder[F[_] : ConcurrentEffect]: EnvelopeDecoder[F, Json] = Kleisli[F, AmqpEnvelope[Array[Byte]], Json]{
+    envelope: AmqpEnvelope[Array[Byte]] =>
+      AmqpEnvelope.stringDecoder[F].run.apply(envelope).flatMap{
+        str => io.circe.parser.parse(str) match {
+          case Right(result) => result.pure[F]
+          case Left(err) => ConcurrentEffect[F].raiseError(err)
+        }
+      }
   }
 
   val createSSLContext: IO[SSLContext] = {
@@ -108,6 +125,33 @@ object Main extends IOApp {
 
   val routingKey = RoutingKey("#")
 
+  final case class DependencyUpdate(packageName: String, packageVersion: String)
+
+  val anityaRoutingKey = RoutingKey("org.release-monitoring.prod.anitya.project.version.update")
+
+  def parseEnvelope(envelope: AmqpEnvelope[Json]): Option[DependencyUpdate] = {
+    val routingKeySeen = envelope.routingKey
+    if (anityaRoutingKey == routingKeySeen) {
+      parsePayload(envelope.payload)
+    } else {
+      println(s"Throwing away payload because routing key was ${routingKeySeen}")
+      None
+    }
+  }
+
+  implicit val dependencyUpdateDecoder: Decoder[DependencyUpdate] = new Decoder[DependencyUpdate] {
+    override def apply(c: HCursor): Result[DependencyUpdate] = {
+      for {
+        projectName <- c.downField("project").downField("name").as[String]
+        projectVersion <- c.downField("project").downField("version").as[String]
+      } yield DependencyUpdate(packageName = projectName, packageVersion = projectVersion)
+    }
+  }
+
+  def parsePayload(payload: Json): Option[DependencyUpdate] = {
+    payload.as[DependencyUpdate].toOption
+  }
+
   override def run(args: List[String]): IO[ExitCode] = for {
     _ <- IO(System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "TRACE"))
    fs2Rabbit <- generateFs2Rabbit
@@ -117,10 +161,10 @@ object Main extends IOApp {
 //       _ <- fs2Rabbit.declareExchange(exchangeName, ExchangeType.Topic)
        _ <- fs2Rabbit.declareQueue(DeclarationQueueConfig(queueName = queueName, durable = NonDurable, exclusive = NonExclusive, autoDelete = AutoDelete, arguments = Map.empty))
        _ <- fs2Rabbit.bindQueue(queueName, exchangeName, routingKey)
-       consumer <- fs2Rabbit.createAutoAckConsumer(
+       consumer <- fs2Rabbit.createAutoAckConsumer[Json](
          queueName = queueName
        )
-       _ <- consumer.map(_.toString).evalMap(x => IO(println(x))).compile.drain
+       _ <- consumer.map(parseEnvelope).evalMap(x => IO(println(x))).compile.drain
      } yield ()
    }
     //_ <- fs2.Stream
