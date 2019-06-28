@@ -119,8 +119,13 @@ object Main extends IOApp {
 
   val routingKey = RoutingKey("#")
 
-  final case class DependencyUpdate(packageName: String, packageVersion: String) {
-    def prettyPrint: String = s"Package $packageName was just upgraded to version $packageVersion!"
+  final case class DependencyUpdate(packageName: String, packageVersion: String, previousVersion: String, homepage: String) {
+    def printEmailTitle: String = s"Package $packageName was just upgraded from " +
+      s"version $previousVersion to $packageVersion"
+
+    def printEmailBody: String = s"Package $packageName was just upgraded from " +
+      s"version $previousVersion to $packageVersion. Check out its homepage " +
+      s"$homepage for more details."
   }
 
   val anityaRoutingKey = RoutingKey("org.release-monitoring.prod.anitya.project.version.update")
@@ -140,7 +145,14 @@ object Main extends IOApp {
       for {
         projectName <- c.downField("project").downField("name").as[String]
         projectVersion <- c.downField("project").downField("version").as[String]
-      } yield DependencyUpdate(packageName = projectName, packageVersion = projectVersion)
+        previousVersion <- c.downField("project").downField("old_version").as[String]
+        homepage <- c.downField("project").downField("homepage").as[String]
+      } yield DependencyUpdate(
+        packageName = projectName,
+        packageVersion = projectVersion,
+        previousVersion = previousVersion,
+        homepage = homepage
+      )
     }
   }
 
@@ -170,7 +182,7 @@ object Main extends IOApp {
                to = "mail@changlinli.com",
                from = "auto@example.com",
                subject = "Something updated!",
-               content = value.prettyPrint
+               content = value.printEmailTitle
              )
            case None => IO.unit
          }
