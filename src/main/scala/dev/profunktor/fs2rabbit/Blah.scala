@@ -2,7 +2,7 @@ package dev.profunktor.fs2rabbit
 
 import cats.effect.ConcurrentEffect
 import cats.syntax.functor._
-import com.rabbitmq.client.{DefaultSaslConfig, LongString, SaslConfig, SaslMechanism}
+import com.rabbitmq.client.DefaultSaslConfig
 import dev.profunktor.fs2rabbit.config.Fs2RabbitConfig
 import dev.profunktor.fs2rabbit.interpreter.{AmqpClientEffect, ConnectionEffect, Fs2Rabbit, LiveInternalQueue}
 import dev.profunktor.fs2rabbit.program.{AckingProgram, ConsumingProgram}
@@ -10,7 +10,7 @@ import javax.net.ssl.SSLContext
 
 object Blah {
 
-  def customCreateFs2Rabbit[F[_] : ConcurrentEffect](config: Fs2RabbitConfig, sslContext: Option[SSLContext]) = {
+  def customCreateFs2Rabbit[F[_] : ConcurrentEffect](config: Fs2RabbitConfig, sslContext: Option[SSLContext]): F[Fs2Rabbit[F]] = {
     ConnectionEffect.mkConnectionFactory[F](config, sslContext).map {
       case (factory, addresses) =>
         val saslConfig = DefaultSaslConfig.EXTERNAL

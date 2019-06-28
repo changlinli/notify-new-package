@@ -1,22 +1,17 @@
 package com.changlinli.releaseNotification
 
-import java.io.{BufferedInputStream, FileInputStream, InputStreamReader}
-import java.nio.file.Paths
-import java.security.{KeyFactory, KeyStore, PrivateKey, SecureRandom}
-import java.security.cert.Certificate
-import java.security.spec.PKCS8EncodedKeySpec
+import java.io.{FileInputStream, InputStreamReader}
+import java.security.{KeyStore, SecureRandom}
 
 import cats.data.{Kleisli, NonEmptyList}
-import cats.effect.{Blocker, ConcurrentEffect, ExitCode, IO, IOApp}
+import cats.effect.{ConcurrentEffect, ExitCode, IO, IOApp}
 import cats.implicits._
 import dev.profunktor.fs2rabbit.Blah
 import dev.profunktor.fs2rabbit.config.declaration.{AutoDelete, DeclarationQueueConfig, NonDurable, NonExclusive}
 import dev.profunktor.fs2rabbit.config.{Fs2RabbitConfig, Fs2RabbitNodeConfig}
 import dev.profunktor.fs2rabbit.effects.EnvelopeDecoder
-import dev.profunktor.fs2rabbit.json.Fs2JsonDecoder
-import dev.profunktor.fs2rabbit.interpreter.{ConnectionEffect, Fs2Rabbit}
-import dev.profunktor.fs2rabbit.model.{AmqpEnvelope, ExchangeName, ExchangeType, QueueName, RoutingKey}
-import fs2.text
+import dev.profunktor.fs2rabbit.interpreter.Fs2Rabbit
+import dev.profunktor.fs2rabbit.model.{AmqpEnvelope, ExchangeName, QueueName, RoutingKey}
 import io.circe.Decoder.Result
 import io.circe.{Decoder, HCursor, Json}
 import javax.net.ssl.{KeyManagerFactory, SSLContext, TrustManagerFactory}
@@ -24,7 +19,6 @@ import org.bouncycastle.asn1.pkcs.PrivateKeyInfo
 import org.bouncycastle.jcajce.provider.asymmetric.x509.CertificateFactory
 import org.bouncycastle.openssl.PEMParser
 import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter
-import org.bouncycastle.util.io.pem.PemObjectParser
 
 import scala.language.higherKinds
 
@@ -125,7 +119,9 @@ object Main extends IOApp {
 
   val routingKey = RoutingKey("#")
 
-  final case class DependencyUpdate(packageName: String, packageVersion: String)
+  final case class DependencyUpdate(packageName: String, packageVersion: String) {
+    def prettyPrint: String = s"Package $packageName was just upgraded to version $packageVersion!"
+  }
 
   val anityaRoutingKey = RoutingKey("org.release-monitoring.prod.anitya.project.version.update")
 
@@ -154,6 +150,7 @@ object Main extends IOApp {
 
   override def run(args: List[String]): IO[ExitCode] = for {
     _ <- IO(System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "TRACE"))
+    emailSender <- Email.initialize
    fs2Rabbit <- generateFs2Rabbit
    _ <- fs2Rabbit.createConnectionChannel.use { implicit channel =>
      for {
@@ -164,7 +161,21 @@ object Main extends IOApp {
        consumer <- fs2Rabbit.createAutoAckConsumer[Json](
          queueName = queueName
        )
-       _ <- consumer.map(parseEnvelope).evalMap(x => IO(println(x))).compile.drain
+       _ <- consumer
+         .map(parseEnvelope)
+         .evalTap(x => IO(println(x)))
+         .evalMap{
+           case Some(value) =>
+             emailSender.email(
+               to = "mail@changlinli.com",
+               from = "auto@example.com",
+               subject = "Something updated!",
+               content = value.prettyPrint
+             )
+           case None => IO.unit
+         }
+         .compile
+         .drain
      } yield ()
    }
     //_ <- fs2.Stream
