@@ -12,6 +12,9 @@ import dev.profunktor.fs2rabbit.config.{Fs2RabbitConfig, Fs2RabbitNodeConfig}
 import dev.profunktor.fs2rabbit.effects.EnvelopeDecoder
 import dev.profunktor.fs2rabbit.interpreter.Fs2Rabbit
 import dev.profunktor.fs2rabbit.model.{AmqpEnvelope, ExchangeName, QueueName, RoutingKey}
+import doobie._
+import doobie.implicits._
+import grizzled.slf4j.Logging
 import io.circe.Decoder.Result
 import io.circe.{Decoder, HCursor, Json}
 import javax.net.ssl.{KeyManagerFactory, SSLContext, TrustManagerFactory}
@@ -22,7 +25,7 @@ import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter
 
 import scala.language.higherKinds
 
-object Main extends IOApp {
+object Main extends IOApp with Logging {
   val config = Fs2RabbitConfig(
     nodes = NonEmptyList.of(Fs2RabbitNodeConfig(host = "rabbitmq.fedoraproject.org", 5671)),
     virtualHost = "/public_pubsub",
@@ -101,11 +104,6 @@ object Main extends IOApp {
   }
 
   val generateFs2Rabbit: IO[Fs2Rabbit[IO]] = for {
-//    sslContext <- createClientSSLContextFromRawStrings(
-//      caCertificateFilename = "cacert.pem",
-//      clientPrivateKeyFilename = "fedora-key.pem",
-//      serverPublicKeyFilename = "fedora-cert.pem"
-//    )
     sslContext <- createSSLContext
     fs2Rabbit <- Blah.customCreateFs2Rabbit[IO](
       config = config,
@@ -135,7 +133,7 @@ object Main extends IOApp {
     if (anityaRoutingKey == routingKeySeen) {
       parsePayload(envelope.payload)
     } else {
-      println(s"Throwing away payload because routing key was ${routingKeySeen}")
+      logger.info(s"Throwing away payload because routing key was ${routingKeySeen}")
       None
     }
   }
@@ -160,44 +158,85 @@ object Main extends IOApp {
     payload.as[DependencyUpdate].toOption
   }
 
+  val transactor = Transactor.fromDriverManager[IO](
+    driver = "org.sqlite.JDBC",
+    url = "jdbc:sqlite:sample.db",
+    user = "",
+    pass = ""
+  )
+
+  val dropSubscriptionsTable = sql"""DROP TABLE IF EXISTS subscriptions""".update.run
+
+  val createSubscriptionsTable = sql"""CREATE TABLE subscriptions (
+      email TEXT NOT NULL UNIQUE,
+      packageName TEXT NOT NULL
+    )""".update.run
+
+  def insertIntoDB(name: String, packageName: String) =
+    sql"""INSERT INTO subscriptions (email, packageName) values ($name, $packageName)""".update.run
+
+  def retrieveAllEmailsWithPackageName(packageName: String): IO[List[String]] =
+    sql"""SELECT email FROM subscriptions WHERE packageName=$packageName"""
+      .query[String]
+      .to[List]
+      .transact(transactor)
+
+  def retrieveAllEmailsSubscribedToAll: IO[List[String]] =
+    sql"""SELECT email FROM subscriptions WHERE packageName='ALL'"""
+      .query[String]
+      .to[List]
+      .transact(transactor)
+
+  val doobieFragment = for {
+    _ <- dropSubscriptionsTable
+    _ <- createSubscriptionsTable
+  } yield ()
+
   override def run(args: List[String]): IO[ExitCode] = for {
     _ <- IO(System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "TRACE"))
+    _ <- doobieFragment.transact(transactor)
+    _ <- insertIntoDB("mail@changlinli.com", "ALL").transact(transactor)
     emailSender <- Email.initialize
-   fs2Rabbit <- generateFs2Rabbit
-   _ <- fs2Rabbit.createConnectionChannel.use { implicit channel =>
-     for {
-       _ <- IO(println("Are we here?"))
-//       _ <- fs2Rabbit.declareExchange(exchangeName, ExchangeType.Topic)
-       _ <- fs2Rabbit.declareQueue(DeclarationQueueConfig(queueName = queueName, durable = NonDurable, exclusive = NonExclusive, autoDelete = AutoDelete, arguments = Map.empty))
-       _ <- fs2Rabbit.bindQueue(queueName, exchangeName, routingKey)
-       consumer <- fs2Rabbit.createAutoAckConsumer[Json](
-         queueName = queueName
-       )
-       _ <- consumer
-         .map(parseEnvelope)
-         .evalTap(x => IO(println(x)))
-         .evalMap{
-           case Some(value) =>
-             emailSender.email(
-               to = "mail@changlinli.com",
-               from = "auto@example.com",
-               subject = "Something updated!",
-               content = value.printEmailTitle
-             )
-           case None => IO.unit
-         }
-         .compile
-         .drain
-     } yield ()
-   }
-    //_ <- fs2.Stream
-      //.resource(Blocker[IO])
-      //.flatMap{ blocker =>
-        //fs2.io.file
-          //.readAll[IO](Paths.get("/home/changlin/scratch/fedora-messaging/messaging-pipe"), blocker, 4096)
-          //.through(text.utf8Decode).groupAdjacentBy()
-      //}
-      //.compile
-      //.drain
+    fs2Rabbit <- generateFs2Rabbit
+    _ <- fs2Rabbit.createConnectionChannel.use { implicit channel =>
+      for {
+        _ <- fs2Rabbit.declareQueue(DeclarationQueueConfig(queueName = queueName, durable = NonDurable, exclusive = NonExclusive, autoDelete = AutoDelete, arguments = Map.empty))
+        _ <- fs2Rabbit.bindQueue(queueName, exchangeName, routingKey)
+        consumer <- fs2Rabbit.createAutoAckConsumer[Json](
+          queueName = queueName
+        )
+        _ <- consumer
+          .map(parseEnvelope)
+          .evalTap(x => IO(logger.info(x)))
+          .evalMap{
+            case Some(value) =>
+              for {
+                emailAddresses <- retrieveAllEmailsWithPackageName(value.packageName)
+                _ <- IO(s"All email addresses subscribed to ${value.packageName}: $emailAddresses")
+                emailAddressesSubscribedToAllUpdates <- retrieveAllEmailsSubscribedToAll
+                _ <- IO(s"All email addresses subscribed to ALL: $emailAddressesSubscribedToAllUpdates")
+                _ <- (emailAddressesSubscribedToAllUpdates ++ emailAddresses).traverse{ emailAddress =>
+                  logger.info(s"Emailing out an update of ${value.packageName} to $emailAddress")
+                  emailSender.email(
+                    to = emailAddress,
+                    from = "auto@example.com",
+                    subject = s"${value.packageName} was updated!",
+                    content = value.printEmailTitle
+                  )
+                }
+              } yield ()
+              retrieveAllEmailsWithPackageName(value.packageName)
+              emailSender.email(
+                to = "mail@changlinli.com",
+                from = "auto@example.com",
+                subject = "Something updated!",
+                content = value.printEmailTitle
+              )
+            case None => IO.unit
+          }
+          .compile
+          .drain
+      } yield ()
+    }
   } yield ExitCode.Success
 }
