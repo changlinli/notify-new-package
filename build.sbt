@@ -27,3 +27,11 @@ libraryDependencies += "org.http4s" %% "http4s-dsl" % "0.21.0-M1"
 libraryDependencies += "org.http4s" %% "http4s-circe" % "0.21.0-M1"
 libraryDependencies += "org.http4s" %% "http4s-blaze-server" % "0.21.0-M1"
 libraryDependencies += "com.github.scopt" %% "scopt" % "3.7.1"
+
+assemblyMergeStrategy in assembly := {
+  // For now we're not going to use anything JDK-9 related
+  case "META-INF/versions/9/module-info.class" => MergeStrategy.discard
+  case x =>
+    val oldStrategy = (assemblyMergeStrategy in assembly).value
+    oldStrategy(x)
+}
