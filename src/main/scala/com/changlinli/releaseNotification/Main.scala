@@ -27,6 +27,7 @@ import org.http4s._
 import org.http4s.dsl.io._
 import org.http4s.implicits._
 import org.http4s.server.blaze.BlazeServerBuilder
+import scopt.OptionParser
 
 import scala.language.higherKinds
 
@@ -38,10 +39,11 @@ object Main extends IOApp with Logging {
   final case class Config(
     databaseFile: String = "sample.db",
     portNumber: Int = 8080,
-    databaseCreationOpt: DatabaseCreationOpt = PreexistingDatabase
+    databaseCreationOpt: DatabaseCreationOpt = PreexistingDatabase,
+    ipAddress: String = "127.0.0.1"
   )
 
-  val cmdLineOptionParser = new scopt.OptionParser[Config]("notify-new-package") {
+  val cmdLineOptionParser: OptionParser[Config] = new scopt.OptionParser[Config]("notify-new-package") {
     head("notify-new-package", "0.0.1")
 
     opt[String]('f', "filename").action{
@@ -54,6 +56,10 @@ object Main extends IOApp with Logging {
 
     opt[Unit]('i', "initialize-database").action{
       (_, config) => config.copy(databaseCreationOpt = CreateFromScratch)
+    }
+
+    opt[String]('a', "bind-address").action{
+      (address, config) => config.copy(ipAddress = address)
     }
 
     help("help")
@@ -106,7 +112,7 @@ object Main extends IOApp with Logging {
   }
 
   // If you see a warning here about unreachable code see https://github.com/scala/bug/issues/11457
-  val webService = HttpRoutes.of[IO]{
+  def webService(emailSender: Email): HttpRoutes[IO] = HttpRoutes.of[IO]{
     case request @ GET -> Root =>
       StaticFile
         .fromResource("/index.html", blocker, Some(request))
@@ -123,6 +129,11 @@ object Main extends IOApp with Logging {
           case Right(incomingSubscription) =>
             IO(logger.info(s"Persisting the following subscription: $incomingSubscription"))
               .>>(persistSubscriptions(incomingSubscription).transact(Persistence.transactor))
+              .>>(emailSender.email(
+                to = incomingSubscription.emailAddress,
+                subject = s"Signed for notifications about ${incomingSubscription.packages.mkString(",")}",
+                content = s"You will get an email anytime one of the following packages gets a new version: ${incomingSubscription.packages.mkString(",")}"
+              ))
               .>>(Ok("Successfully submitted form!"))
         }
       } yield response
@@ -245,9 +256,9 @@ object Main extends IOApp with Logging {
       .packages
       .traverse(pkg => Persistence.insertIntoDB(name = incomingSubscriptionRequest.emailAddress, packageName = pkg))
 
-  val runWebServer: IO[Unit] = BlazeServerBuilder[IO]
-    .bindHttp(8080, "localhost")
-    .withHttpApp(webService.orNotFound)
+  def runWebServer(emailSender: Email, port: Int, ipAddress: String): IO[Unit] = BlazeServerBuilder[IO]
+    .bindHttp(port, ipAddress)
+    .withHttpApp(webService(emailSender).orNotFound)
     .serve
     .compile
     .drain
@@ -294,7 +305,6 @@ object Main extends IOApp with Logging {
                   logger.info(s"Emailing out an update of ${value.packageName} to $emailAddress")
                   emailSender.email(
                     to = emailAddress,
-                    from = "auto@example.com",
                     subject = s"${value.packageName} was updated!",
                     content = value.printEmailTitle
                   )
@@ -306,6 +316,6 @@ object Main extends IOApp with Logging {
           .drain
       } yield ()
     }.start
-    _ <- runWebServer
+    _ <- runWebServer(emailSender, cmdLineOpts.portNumber, cmdLineOpts.ipAddress)
   } yield ExitCode.Success
 }
