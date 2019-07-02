@@ -2,11 +2,12 @@ package com.changlinli.releaseNotification
 
 import java.io.{FileInputStream, InputStreamReader}
 import java.security.{KeyStore, SecureRandom}
+import java.util.concurrent.Executors
 
 import cats.data.{Kleisli, NonEmptyList}
-import cats.effect.{ConcurrentEffect, ExitCode, IO, IOApp}
+import cats.effect.{Blocker, ConcurrentEffect, ExitCode, IO, IOApp}
 import cats.implicits._
-import dev.profunktor.fs2rabbit.Blah
+import com.rabbitmq.client.DefaultSaslConfig
 import dev.profunktor.fs2rabbit.config.declaration.{AutoDelete, DeclarationQueueConfig, NonDurable, NonExclusive}
 import dev.profunktor.fs2rabbit.config.{Fs2RabbitConfig, Fs2RabbitNodeConfig}
 import dev.profunktor.fs2rabbit.effects.EnvelopeDecoder
@@ -22,10 +23,27 @@ import org.bouncycastle.asn1.pkcs.PrivateKeyInfo
 import org.bouncycastle.jcajce.provider.asymmetric.x509.CertificateFactory
 import org.bouncycastle.openssl.PEMParser
 import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter
+import org.http4s._
+import org.http4s.dsl.io._
+import org.http4s.implicits._
+import org.http4s.server.blaze.BlazeServerBuilder
 
 import scala.language.higherKinds
 
 object Main extends IOApp with Logging {
+  val blocker = Blocker.liftExecutionContext(
+    scala.concurrent.ExecutionContext.fromExecutorService(
+      Executors.newCachedThreadPool
+    )
+  )
+
+  val transactor = Transactor.fromDriverManager[IO](
+    driver = "org.sqlite.JDBC",
+    url = "jdbc:sqlite:sample.db",
+    user = "",
+    pass = ""
+  )
+
   val config = Fs2RabbitConfig(
     nodes = NonEmptyList.of(Fs2RabbitNodeConfig(host = "rabbitmq.fedoraproject.org", 5671)),
     virtualHost = "/public_pubsub",
@@ -45,6 +63,46 @@ object Main extends IOApp with Logging {
       keyStore.load(keyStoreStream, "PASSWORD".toCharArray)
       keyStore
     }
+  }
+
+  final case class IncomingSubscriptionRequest(packages: List[String], emailAddress: String)
+
+  object IncomingSubscriptionRequest {
+    def fromUrlForm(urlForm: UrlForm): Either[String, IncomingSubscriptionRequest] = {
+      for {
+        packages <- urlForm
+          .values
+          .get("packages")
+          .toRight("Packages key not found!")
+        emailAddress <- urlForm
+          .values.get("emailAddress")
+          .flatMap(_.headOption)
+          .toRight("Email address key not found!")
+      } yield IncomingSubscriptionRequest(packages.toList, emailAddress)
+    }
+  }
+
+  // If you see a warning here about unreachable code see https://github.com/scala/bug/issues/11457
+  val webService = HttpRoutes.of[IO]{
+    case request @ GET -> Root =>
+      StaticFile
+        .fromResource("/index.html", blocker, Some(request))
+        .getOrElseF(NotFound("Couldn't find index.html!"))
+    case GET -> Root / "blah" =>
+      Ok("hello blah!")
+    case request @ POST -> Root / "submitEmailAddress" =>
+      for {
+        form <- request.as[UrlForm]
+        _ <- IO(logger.info(s"We got this form: $form"))
+        response <- IncomingSubscriptionRequest.fromUrlForm(form) match {
+          case Left(errMsg) =>
+            BadRequest(errMsg)
+          case Right(incomingSubscription) =>
+            IO(logger.info(s"Persisting the following subscription: $incomingSubscription"))
+              .>>(persistSubscriptions(incomingSubscription).transact(transactor))
+              .>>(Ok("Successfully submitted form!"))
+        }
+      } yield response
   }
 
   implicit def myJsonDecoder[F[_] : ConcurrentEffect]: EnvelopeDecoder[F, Json] = Kleisli[F, AmqpEnvelope[Array[Byte]], Json]{
@@ -105,9 +163,10 @@ object Main extends IOApp with Logging {
 
   val generateFs2Rabbit: IO[Fs2Rabbit[IO]] = for {
     sslContext <- createSSLContext
-    fs2Rabbit <- Blah.customCreateFs2Rabbit[IO](
+    fs2Rabbit <- Fs2Rabbit[IO](
       config = config,
-      sslContext = Some(sslContext)
+      sslContext = Some(sslContext),
+      saslConfig = DefaultSaslConfig.EXTERNAL
     )
   } yield fs2Rabbit
 
@@ -133,7 +192,7 @@ object Main extends IOApp with Logging {
     if (anityaRoutingKey == routingKeySeen) {
       parsePayload(envelope.payload)
     } else {
-      logger.info(s"Throwing away payload because routing key was ${routingKeySeen}")
+      logger.info(s"Throwing away payload because routing key was ${routingKeySeen.value}")
       None
     }
   }
@@ -158,19 +217,17 @@ object Main extends IOApp with Logging {
     payload.as[DependencyUpdate].toOption
   }
 
-  val transactor = Transactor.fromDriverManager[IO](
-    driver = "org.sqlite.JDBC",
-    url = "jdbc:sqlite:sample.db",
-    user = "",
-    pass = ""
-  )
-
   val dropSubscriptionsTable = sql"""DROP TABLE IF EXISTS subscriptions""".update.run
 
   val createSubscriptionsTable = sql"""CREATE TABLE subscriptions (
       email TEXT NOT NULL UNIQUE,
       packageName TEXT NOT NULL
     )""".update.run
+
+  def persistSubscriptions(incomingSubscriptionRequest: IncomingSubscriptionRequest): doobie.ConnectionIO[List[Int]] =
+    incomingSubscriptionRequest
+      .packages
+      .traverse(pkg => insertIntoDB(name = incomingSubscriptionRequest.emailAddress, packageName = pkg))
 
   def insertIntoDB(name: String, packageName: String) =
     sql"""INSERT INTO subscriptions (email, packageName) values ($name, $packageName)""".update.run
@@ -191,6 +248,13 @@ object Main extends IOApp with Logging {
     _ <- dropSubscriptionsTable
     _ <- createSubscriptionsTable
   } yield ()
+
+  val runWebServer: IO[Unit] = BlazeServerBuilder[IO]
+    .bindHttp(8080, "localhost")
+    .withHttpApp(webService.orNotFound)
+    .serve
+    .compile
+    .drain
 
   override def run(args: List[String]): IO[ExitCode] = for {
     _ <- IO(System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "TRACE"))
@@ -225,18 +289,12 @@ object Main extends IOApp with Logging {
                   )
                 }
               } yield ()
-              retrieveAllEmailsWithPackageName(value.packageName)
-              emailSender.email(
-                to = "mail@changlinli.com",
-                from = "auto@example.com",
-                subject = "Something updated!",
-                content = value.printEmailTitle
-              )
             case None => IO.unit
           }
           .compile
           .drain
       } yield ()
-    }
+    }.start
+    _ <- runWebServer
   } yield ExitCode.Success
 }
