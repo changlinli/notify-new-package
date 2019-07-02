@@ -5,7 +5,7 @@ import java.security.{KeyStore, SecureRandom}
 import java.util.concurrent.Executors
 
 import cats.data.{Kleisli, NonEmptyList}
-import cats.effect.{Blocker, ConcurrentEffect, ExitCode, IO, IOApp}
+import cats.effect.{Blocker, ConcurrentEffect, Effect, ExitCode, IO, IOApp}
 import cats.implicits._
 import com.rabbitmq.client.DefaultSaslConfig
 import dev.profunktor.fs2rabbit.config.declaration.{AutoDelete, DeclarationQueueConfig, NonDurable, NonExclusive}
@@ -31,17 +31,40 @@ import org.http4s.server.blaze.BlazeServerBuilder
 import scala.language.higherKinds
 
 object Main extends IOApp with Logging {
-  val blocker = Blocker.liftExecutionContext(
+  sealed trait DatabaseCreationOpt
+  case object CreateFromScratch extends DatabaseCreationOpt
+  case object PreexistingDatabase extends DatabaseCreationOpt
+
+  final case class Config(
+    databaseFile: String = "sample.db",
+    portNumber: Int = 8080,
+    databaseCreationOpt: DatabaseCreationOpt = PreexistingDatabase
+  )
+
+  val cmdLineOptionParser = new scopt.OptionParser[Config]("notify-new-package") {
+    head("notify-new-package", "0.0.1")
+
+    opt[String]('f', "filename").action{
+      (filenameStr, config) => config.copy(databaseFile = filenameStr)
+    }
+
+    opt[Int]('p', "port").action{
+      (port, config) => config.copy(portNumber = port)
+    }
+
+    opt[Unit]('i', "initialize-database").action{
+      (_, config) => config.copy(databaseCreationOpt = CreateFromScratch)
+    }
+
+    help("help")
+
+    version("version")
+  }
+
+  private val blocker: Blocker = Blocker.liftExecutionContext(
     scala.concurrent.ExecutionContext.fromExecutorService(
       Executors.newCachedThreadPool
     )
-  )
-
-  val transactor = Transactor.fromDriverManager[IO](
-    driver = "org.sqlite.JDBC",
-    url = "jdbc:sqlite:sample.db",
-    user = "",
-    pass = ""
   )
 
   val config = Fs2RabbitConfig(
@@ -99,7 +122,7 @@ object Main extends IOApp with Logging {
             BadRequest(errMsg)
           case Right(incomingSubscription) =>
             IO(logger.info(s"Persisting the following subscription: $incomingSubscription"))
-              .>>(persistSubscriptions(incomingSubscription).transact(transactor))
+              .>>(persistSubscriptions(incomingSubscription).transact(Persistence.transactor))
               .>>(Ok("Successfully submitted form!"))
         }
       } yield response
@@ -217,37 +240,10 @@ object Main extends IOApp with Logging {
     payload.as[DependencyUpdate].toOption
   }
 
-  val dropSubscriptionsTable = sql"""DROP TABLE IF EXISTS subscriptions""".update.run
-
-  val createSubscriptionsTable = sql"""CREATE TABLE subscriptions (
-      email TEXT NOT NULL UNIQUE,
-      packageName TEXT NOT NULL
-    )""".update.run
-
   def persistSubscriptions(incomingSubscriptionRequest: IncomingSubscriptionRequest): doobie.ConnectionIO[List[Int]] =
     incomingSubscriptionRequest
       .packages
-      .traverse(pkg => insertIntoDB(name = incomingSubscriptionRequest.emailAddress, packageName = pkg))
-
-  def insertIntoDB(name: String, packageName: String) =
-    sql"""INSERT INTO subscriptions (email, packageName) values ($name, $packageName)""".update.run
-
-  def retrieveAllEmailsWithPackageName(packageName: String): IO[List[String]] =
-    sql"""SELECT email FROM subscriptions WHERE packageName=$packageName"""
-      .query[String]
-      .to[List]
-      .transact(transactor)
-
-  def retrieveAllEmailsSubscribedToAll: IO[List[String]] =
-    sql"""SELECT email FROM subscriptions WHERE packageName='ALL'"""
-      .query[String]
-      .to[List]
-      .transact(transactor)
-
-  val doobieFragment = for {
-    _ <- dropSubscriptionsTable
-    _ <- createSubscriptionsTable
-  } yield ()
+      .traverse(pkg => Persistence.insertIntoDB(name = incomingSubscriptionRequest.emailAddress, packageName = pkg))
 
   val runWebServer: IO[Unit] = BlazeServerBuilder[IO]
     .bindHttp(8080, "localhost")
@@ -258,13 +254,28 @@ object Main extends IOApp with Logging {
 
   override def run(args: List[String]): IO[ExitCode] = for {
     _ <- IO(System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "TRACE"))
-    _ <- doobieFragment.transact(transactor)
-    _ <- insertIntoDB("mail@changlinli.com", "ALL").transact(transactor)
+    cmdLineOpts <- cmdLineOptionParser.parse(args, Config()) match {
+      case Some(configuration) => configuration.pure[IO]
+      case None => Effect[IO].raiseError[Config](new Exception("Bad command line options"))
+    }
+    transactor <- cmdLineOpts.databaseCreationOpt match {
+      case CreateFromScratch => Persistence.initializeDatabaseFromScratch(cmdLineOpts.databaseFile)
+      case PreexistingDatabase => Persistence.transactorA(cmdLineOpts.databaseFile).pure[IO]
+    }
+    _ <- Persistence.insertIntoDB("mail@changlinli.com", "ALL").transact(transactor)
     emailSender <- Email.initialize
     fs2Rabbit <- generateFs2Rabbit
     _ <- fs2Rabbit.createConnectionChannel.use { implicit channel =>
       for {
-        _ <- fs2Rabbit.declareQueue(DeclarationQueueConfig(queueName = queueName, durable = NonDurable, exclusive = NonExclusive, autoDelete = AutoDelete, arguments = Map.empty))
+        _ <- fs2Rabbit.declareQueue(
+          DeclarationQueueConfig(
+            queueName = queueName,
+            durable = NonDurable,
+            exclusive = NonExclusive,
+            autoDelete = AutoDelete,
+            arguments = Map.empty
+          )
+        )
         _ <- fs2Rabbit.bindQueue(queueName, exchangeName, routingKey)
         consumer <- fs2Rabbit.createAutoAckConsumer[Json](
           queueName = queueName
@@ -275,9 +286,9 @@ object Main extends IOApp with Logging {
           .evalMap{
             case Some(value) =>
               for {
-                emailAddresses <- retrieveAllEmailsWithPackageName(value.packageName)
+                emailAddresses <- Persistence.retrieveAllEmailsWithPackageName(value.packageName)
                 _ <- IO(s"All email addresses subscribed to ${value.packageName}: $emailAddresses")
-                emailAddressesSubscribedToAllUpdates <- retrieveAllEmailsSubscribedToAll
+                emailAddressesSubscribedToAllUpdates <- Persistence.retrieveAllEmailsSubscribedToAll
                 _ <- IO(s"All email addresses subscribed to ALL: $emailAddressesSubscribedToAllUpdates")
                 _ <- (emailAddressesSubscribedToAllUpdates ++ emailAddresses).traverse{ emailAddress =>
                   logger.info(s"Emailing out an update of ${value.packageName} to $emailAddress")
