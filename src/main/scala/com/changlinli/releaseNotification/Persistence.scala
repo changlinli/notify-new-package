@@ -7,8 +7,9 @@ import doobie._
 import doobie.implicits._
 import doobie.Transactor
 import doobie.util.transactor.Transactor.Aux
+import grizzled.slf4j.Logging
 
-object Persistence {
+object Persistence extends Logging {
   def transactorA(fileName: String)(implicit contextShift: ContextShift[IO]): Aux[IO, Unit] =
     Transactor.fromDriverManager[IO](
       driver = "org.sqlite.JDBC",
@@ -55,6 +56,7 @@ object Persistence {
       _ <- IO(file.delete())
       _ <- IO(file.createNewFile())
       xactor = transactorA(filename)
+      _ <- IO(logger.info("About to initialize database with new tables"))
       _ <- initializeDatabase.transact(xactor)
     } yield xactor
   }
