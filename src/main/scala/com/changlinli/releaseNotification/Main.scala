@@ -243,8 +243,8 @@ object Main extends IOApp with Logging {
       for {
         projectName <- c.downField("project").downField("name").as[String]
         projectVersion <- c.downField("project").downField("version").as[String]
-        previousVersion <- c.downField("old_version").as[String]
-        homepage <- c.downField("message").downField("homepage").as[String]
+        previousVersion <- c.downField("message").downField("old_version").as[String]
+        homepage <- c.downField("project").downField("homepage").as[String]
       } yield DependencyUpdate(
         packageName = projectName,
         packageVersion = projectVersion,
