@@ -161,40 +161,6 @@ object Main extends IOApp with Logging {
     }}
   }
 
-  def createClientSSLContextFromRawStrings(caCertificateFilename: String,
-                                           clientPrivateKeyFilename: String,
-                                           serverPublicKeyFilename: String): IO[SSLContext] = {
-    IO{
-      val caFileInput = new FileInputStream(caCertificateFilename)
-
-      val certificateFactory = new CertificateFactory()
-
-      val caCert = certificateFactory.engineGenerateCertificate(caFileInput)
-
-      val serverPublicFileInput = new FileInputStream(serverPublicKeyFilename)
-      val serverPublicCert = certificateFactory.engineGenerateCertificate(serverPublicFileInput)
-
-      val privateKeyFileInput = new FileInputStream(clientPrivateKeyFilename)
-
-      val privateKeyInfo = new PEMParser(new InputStreamReader(privateKeyFileInput)).readObject().asInstanceOf[PrivateKeyInfo]
-      val converter = new JcaPEMKeyConverter()
-      val privateKey = converter.getPrivateKey(privateKeyInfo)
-
-      val keyStore = KeyStore.getInstance("JKS")
-      keyStore.load(null)
-      keyStore.setCertificateEntry("fedora-custom-ca", caCert)
-      keyStore.setKeyEntry("private-key", privateKey, "changeit".toCharArray, Array(caCert, serverPublicCert))
-      val kmf = KeyManagerFactory.getInstance("SunX509")
-      kmf.init(keyStore, "changeit".toCharArray)
-      val tmf = TrustManagerFactory.getInstance("SunX509")
-      tmf.init(keyStore)
-
-      val sslContext = SSLContext.getInstance("TLS")
-      sslContext.init(kmf.getKeyManagers, tmf.getTrustManagers, new SecureRandom())
-      sslContext
-    }
-  }
-
   val generateFs2Rabbit: IO[Fs2Rabbit[IO]] = for {
     sslContext <- createSSLContext
     fs2Rabbit <- Fs2Rabbit[IO](
@@ -277,11 +243,6 @@ object Main extends IOApp with Logging {
       case None => Effect[IO].raiseError[Config](new Exception("Bad command line options"))
     }
     _ <- IO(logger.info(s"These are the commandline options we parsed: $cmdLineOpts"))
-    transactor <- cmdLineOpts.databaseCreationOpt match {
-      case CreateFromScratch => Persistence.initializeDatabaseFromScratch(cmdLineOpts.databaseFile)
-      case PreexistingDatabase => Persistence.transactorA(cmdLineOpts.databaseFile).pure[IO]
-    }
-    _ <- Persistence.insertIntoDB("mail@changlinli.com", "ALL").transact(transactor)
     emailSender <- Email.initialize
     fs2Rabbit <- generateFs2Rabbit
     _ <- fs2Rabbit.createConnectionChannel.use { implicit channel =>
