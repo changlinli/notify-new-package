@@ -1,6 +1,6 @@
 package com.changlinli.releaseNotification
 
-import java.io.{FileInputStream, InputStreamReader}
+import java.io.FileInputStream
 import java.security.{KeyStore, SecureRandom}
 import java.util.concurrent.Executors
 
@@ -8,21 +8,16 @@ import cats.data.{Kleisli, NonEmptyList}
 import cats.effect.{Blocker, ConcurrentEffect, Effect, ExitCode, IO, IOApp}
 import cats.implicits._
 import com.rabbitmq.client.DefaultSaslConfig
-import dev.profunktor.fs2rabbit.config.declaration.{AutoDelete, DeclarationQueueConfig, Durable, NonAutoDelete, NonDurable, NonExclusive}
+import dev.profunktor.fs2rabbit.config.declaration.{DeclarationQueueConfig, Durable, NonAutoDelete, NonExclusive}
 import dev.profunktor.fs2rabbit.config.{Fs2RabbitConfig, Fs2RabbitNodeConfig}
 import dev.profunktor.fs2rabbit.effects.EnvelopeDecoder
 import dev.profunktor.fs2rabbit.interpreter.Fs2Rabbit
 import dev.profunktor.fs2rabbit.model.{AmqpEnvelope, ExchangeName, QueueName, RoutingKey}
-import doobie._
 import doobie.implicits._
 import grizzled.slf4j.Logging
 import io.circe.Decoder.Result
 import io.circe.{Decoder, DecodingFailure, HCursor, Json}
 import javax.net.ssl.{KeyManagerFactory, SSLContext, TrustManagerFactory}
-import org.bouncycastle.asn1.pkcs.PrivateKeyInfo
-import org.bouncycastle.jcajce.provider.asymmetric.x509.CertificateFactory
-import org.bouncycastle.openssl.PEMParser
-import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter
 import org.http4s._
 import org.http4s.dsl.io._
 import org.http4s.implicits._
@@ -32,18 +27,18 @@ import scopt.OptionParser
 import scala.language.higherKinds
 
 object Main extends IOApp with Logging {
-  sealed trait DatabaseCreationOpt
-  case object CreateFromScratch extends DatabaseCreationOpt
-  case object PreexistingDatabase extends DatabaseCreationOpt
+  sealed trait DatabaseCreationOption
+  case object CreateFromScratch extends DatabaseCreationOption
+  case object PreexistingDatabase extends DatabaseCreationOption
 
-  final case class Config(
+  final case class ServiceConfiguration(
     databaseFile: String = "sample.db",
     portNumber: Int = 8080,
-    databaseCreationOpt: DatabaseCreationOpt = PreexistingDatabase,
+    databaseCreationOpt: DatabaseCreationOption = PreexistingDatabase,
     ipAddress: String = "127.0.0.1"
   )
 
-  val cmdLineOptionParser: OptionParser[Config] = new scopt.OptionParser[Config]("notify-new-package") {
+  val cmdLineOptionParser: OptionParser[ServiceConfiguration] = new scopt.OptionParser[ServiceConfiguration]("notify-new-package") {
     head("notify-new-package", "0.0.1")
 
     opt[String]('f', "filename").action{
@@ -92,51 +87,6 @@ object Main extends IOApp with Logging {
       keyStore.load(keyStoreStream, "PASSWORD".toCharArray)
       keyStore
     }
-  }
-
-  final case class IncomingSubscriptionRequest(packages: List[String], emailAddress: String)
-
-  object IncomingSubscriptionRequest {
-    def fromUrlForm(urlForm: UrlForm): Either[String, IncomingSubscriptionRequest] = {
-      for {
-        packages <- urlForm
-          .values
-          .get("packages")
-          .toRight("Packages key not found!")
-        emailAddress <- urlForm
-          .values.get("emailAddress")
-          .flatMap(_.headOption)
-          .toRight("Email address key not found!")
-      } yield IncomingSubscriptionRequest(packages.toList, emailAddress)
-    }
-  }
-
-  // If you see a warning here about unreachable code see https://github.com/scala/bug/issues/11457
-  def webService(emailSender: Email): HttpRoutes[IO] = HttpRoutes.of[IO]{
-    case request @ GET -> Root =>
-      StaticFile
-        .fromResource("/index.html", blocker, Some(request))
-        .getOrElseF(NotFound("Couldn't find index.html!"))
-    case GET -> Root / "blah" =>
-      Ok("hello blah!")
-    case request @ POST -> Root / "submitEmailAddress" =>
-      for {
-        form <- request.as[UrlForm]
-        _ <- IO(logger.info(s"We got this form: $form"))
-        response <- IncomingSubscriptionRequest.fromUrlForm(form) match {
-          case Left(errMsg) =>
-            BadRequest(errMsg)
-          case Right(incomingSubscription) =>
-            IO(logger.info(s"Persisting the following subscription: $incomingSubscription"))
-              .>>(persistSubscriptions(incomingSubscription).transact(Persistence.transactor))
-              .>>(emailSender.email(
-                to = incomingSubscription.emailAddress,
-                subject = s"Signed for notifications about ${incomingSubscription.packages.mkString(",")}",
-                content = s"You will get an email anytime one of the following packages gets a new version: ${incomingSubscription.packages.mkString(",")}"
-              ))
-              .>>(Ok("Successfully submitted form!"))
-        }
-      } yield response
   }
 
   implicit def myJsonDecoder[F[_] : ConcurrentEffect]: EnvelopeDecoder[F, Json] = Kleisli[F, AmqpEnvelope[Array[Byte]], Json]{
@@ -229,18 +179,11 @@ object Main extends IOApp with Logging {
       .packages
       .traverse(pkg => Persistence.insertIntoDB(name = incomingSubscriptionRequest.emailAddress, packageName = pkg))
 
-  def runWebServer(emailSender: Email, port: Int, ipAddress: String): IO[Unit] = BlazeServerBuilder[IO]
-    .bindHttp(port, ipAddress)
-    .withHttpApp(webService(emailSender).orNotFound)
-    .serve
-    .compile
-    .drain
-
   override def run(args: List[String]): IO[ExitCode] = for {
     _ <- IO(System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "INFO"))
-    cmdLineOpts <- cmdLineOptionParser.parse(args, Config()) match {
+    cmdLineOpts <- cmdLineOptionParser.parse(args, ServiceConfiguration()) match {
       case Some(configuration) => configuration.pure[IO]
-      case None => Effect[IO].raiseError[Config](new Exception("Bad command line options"))
+      case None => Effect[IO].raiseError[ServiceConfiguration](new Exception("Bad command line options"))
     }
     _ <- IO(logger.info(s"These are the commandline options we parsed: $cmdLineOpts"))
     emailSender <- Email.initialize
@@ -286,6 +229,6 @@ object Main extends IOApp with Logging {
           .drain
       } yield ()
     }.start
-    _ <- runWebServer(emailSender, cmdLineOpts.portNumber, cmdLineOpts.ipAddress)
+    _ <- WebServer.runWebServer(emailSender, cmdLineOpts.portNumber, cmdLineOpts.ipAddress, blocker)
   } yield ExitCode.Success
 }
