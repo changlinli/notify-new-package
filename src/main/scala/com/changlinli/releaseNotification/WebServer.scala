@@ -16,16 +16,26 @@ object WebServer extends Logging {
 
   final case class EmailAddress(str: String)
 
-  final case class Package(str: String)
+  final case class PackageName(str: String)
 
   sealed trait Action
   sealed trait EmailAction extends Action
-  final case class UnsubscribeEmailFromPackage(email: EmailAddress, pkg: Package) extends EmailAction
-  final case class UnsubscribeEmailFromAllPackages(email: EmailAddress) extends EmailAction
-  final case class ChangeEmail(oldEmail: EmailAddress, newEmail: EmailAddress) extends EmailAction
+  final case class UnsubscribeEmailFromPackage(email: EmailAddress, pkg: PackageName) extends EmailAction with PersistenceAction
+  final case class UnsubscribeEmailFromAllPackages(email: EmailAddress) extends EmailAction with PersistenceAction
+  final case class ChangeEmail(oldEmail: EmailAddress, newEmail: EmailAddress) extends EmailAction with PersistenceAction
 
-  sealed trait WebAction extends Action
-  final case class SubscribeToPackages(email: Email, pkgs: NonEmptyList[Package]) extends WebAction
+  sealed trait WebAction
+  final case class SubscribeToPackages(email: Email, pkgs: NonEmptyList[PackageName]) extends WebAction
+
+  sealed trait PersistenceAction
+
+  final case class SubscribeToPackagesFullName(email: Email, pkgs: NonEmptyList[FullPackage]) extends PersistenceAction
+
+  final case class FullPackage(name: PackageName, homepage: String, anityaId: Int)
+
+  def emailActionToPersistenceAction(emailAction: EmailAction): PersistenceAction = ???
+
+  def webActionToPersistenceAction(webAction: WebAction): PersistenceAction = ???
 
   def processInboundWebhook[F[_] : Effect](request: Request[F]): F[EmailAction] = {
     logger.info(s"Request: $request")
@@ -69,7 +79,8 @@ object WebServer extends Logging {
     case request @ POST -> Root / "incomingEmailHook" =>
       for {
         action <- processInboundWebhook(request)
-        _ <- Persistence.processAction(action)
+        persistenceAction = emailActionToPersistenceAction(action)
+        _ <- Persistence.processAction(persistenceAction)
         response <- Ok("Processed inbound email!")
       } yield response
   }
