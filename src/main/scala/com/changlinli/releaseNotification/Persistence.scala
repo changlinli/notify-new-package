@@ -139,7 +139,7 @@ object Persistence extends CustomLogging {
       .run
   }
 
-  def transactorA(fileName: String, executionContext: ExecutionContext, blocker: Blocker)(implicit contextShift: ContextShift[IO]) = {
+  def transactorA(fileName: String, executionContext: ExecutionContext, blocker: Blocker)(implicit contextShift: ContextShift[IO]): Transactor[IO] = {
     val config = new org.sqlite.SQLiteConfig()
     config.enforceForeignKeys(true)
     val dataSource = new SQLiteConnectionPoolDataSource()
