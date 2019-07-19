@@ -1,8 +1,9 @@
 package com.changlinli.releaseNotification
 
-import cats.data.NonEmptyList
+import cats.data.{Ior, NonEmptyList}
 import cats.effect.{Blocker, ContextShift, Effect, IO, Timer}
 import cats.implicits._
+import doobie.free.connection.ConnectionIO
 import doobie.implicits._
 import grizzled.slf4j.Logging
 import org.http4s._
@@ -31,11 +32,48 @@ object WebServer extends Logging {
 
   final case class SubscribeToPackagesFullName(email: Email, pkgs: NonEmptyList[FullPackage]) extends PersistenceAction
 
-  final case class FullPackage(name: PackageName, homepage: String, anityaId: Int)
+  final case class FullPackage(name: PackageName, homepage: String, anityaId: Int, packageId: Int)
 
-  def emailActionToPersistenceAction(emailAction: EmailAction): PersistenceAction = ???
+  def emailActionToPersistenceAction(emailAction: EmailAction): PersistenceAction = emailAction match {
+    case unsubscribe: UnsubscribeEmailFromAllPackages => unsubscribe
+    case unsubscribeFromAll: UnsubscribeEmailFromAllPackages => unsubscribeFromAll
+    case changeEmail: ChangeEmail => changeEmail
+  }
 
-  def webActionToPersistenceAction(webAction: WebAction): PersistenceAction = ???
+  sealed trait Error
+  final case class NoPackagesFoundForNames(packageNames: NonEmptyList[PackageName]) extends Error
+
+  def webActionToPersistenceAction(webAction: WebAction)(implicit contextShift: ContextShift[IO]): ConnectionIO[Ior[Error, PersistenceAction]] =
+    webAction match {
+      case subscribeToPackages: SubscribeToPackages =>
+        Persistence.retrievePackages(subscribeToPackages.pkgs)
+          .map{
+            nameToFullPackages =>
+              val nameToFullPackagesOpt = subscribeToPackages
+                .pkgs
+                .map(name => name -> nameToFullPackages.get(name))
+              val firstElem = nameToFullPackagesOpt.head match {
+                case (_, Some(fullPackage)) =>
+                  Ior.Right(SubscribeToPackagesFullName(subscribeToPackages.email, NonEmptyList.of(fullPackage)))
+                case (packageName, None) =>
+                  Ior.Left(NoPackagesFoundForNames(NonEmptyList.of(packageName)))
+              }
+              nameToFullPackagesOpt.foldLeft(firstElem){
+                case (Ior.Both(noPackagesFoundForNames, subscribeToPackagesFullName), (_, Some(fullPackage))) =>
+                  Ior.Both(noPackagesFoundForNames, subscribeToPackagesFullName.copy(pkgs = fullPackage :: subscribeToPackagesFullName.pkgs))
+                case (Ior.Both(noPackagesFoundForNames, subscribeToPackagesFullName), (packageName, None)) =>
+                  Ior.Both(noPackagesFoundForNames.copy(packageNames = packageName :: noPackagesFoundForNames.packageNames), subscribeToPackagesFullName)
+                case (Ior.Right(subscribeToPackagesFullName), (_, Some(fullPackage))) =>
+                  Ior.Right(subscribeToPackagesFullName.copy(pkgs = fullPackage :: subscribeToPackagesFullName.pkgs))
+                case (Ior.Right(subscribeToPackagesFullName), (packageName, None)) =>
+                  Ior.Both(NoPackagesFoundForNames(NonEmptyList.of(packageName)), subscribeToPackagesFullName)
+                case (Ior.Left(noPackagesFoundForNames), (_, Some(fullPackage))) =>
+                  Ior.Both(noPackagesFoundForNames, SubscribeToPackagesFullName(subscribeToPackages.email, NonEmptyList.of(fullPackage)))
+                case (Ior.Left(noPackagesFoundForNames), (packageName, None)) =>
+                  Ior.Left(noPackagesFoundForNames.copy(packageNames = packageName :: noPackagesFoundForNames.packageNames))
+              }
+          }
+    }
 
   def processInboundWebhook[F[_] : Effect](request: Request[F]): F[EmailAction] = {
     logger.info(s"Request: $request")
