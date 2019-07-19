@@ -63,13 +63,13 @@ object Persistence extends CustomLogging {
   def processAction(action: PersistenceAction)(implicit contextShift: ContextShift[IO]): IO[Unit] = {
     action match {
       case UnsubscribeEmailFromAllPackages(email) =>
-        unsubscribe(email).transact(transactor).map(_ => ())
+        unsubscribe(email).transact(transactor).void
       case ChangeEmail(oldEmail, newEmail) =>
-        changeEmail(oldEmail, newEmail).transact(transactor).map(_ => ())
+        changeEmail(oldEmail, newEmail).transact(transactor).void
       case UnsubscribeEmailFromPackage(email, pkg) =>
-        unsubscribeEmailFromPackage(email, pkg).transact(transactor).map(_ => ())
+        unsubscribeEmailFromPackage(email, pkg).transact(transactor).void
       case SubscribeToPackagesFullName(email, pkgs) =>
-        ???
+        subscribeToPackagesFullName(email, pkgs).transact(transactor).void
     }
   }
 
@@ -157,15 +157,17 @@ object Persistence extends CustomLogging {
       pass = ""
     )
 
-  def retrieveAllEmailsSubscribedToAll(implicit contextShift: ContextShift[IO]): IO[List[String]] =
+  def retrieveAllEmailsSubscribedToAll(implicit contextShift: ContextShift[IO]): IO[List[EmailAddress]] =
     sql"""SELECT email FROM subscriptions WHERE packageName='ALL'"""
       .query[String]
+      .map(EmailAddress.apply)
       .to[List]
       .transact(transactor)
 
-  def retrieveAllEmailsWithPackageName(packageName: String)(implicit contextShift: ContextShift[IO]): IO[List[String]] =
+  def retrieveAllEmailsWithPackageName(packageName: String)(implicit contextShift: ContextShift[IO]): IO[List[EmailAddress]] =
     sql"""SELECT email FROM subscriptions WHERE packageName=$packageName"""
       .query[String]
+      .map(EmailAddress.apply)
       .to[List]
       .transact(transactor)
 

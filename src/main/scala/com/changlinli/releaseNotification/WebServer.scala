@@ -26,16 +26,34 @@ object WebServer extends Logging {
   final case class ChangeEmail(oldEmail: EmailAddress, newEmail: EmailAddress) extends EmailAction with PersistenceAction
 
   sealed trait WebAction
-  final case class SubscribeToPackages(email: Email, pkgs: NonEmptyList[PackageName]) extends WebAction
+  final case class SubscribeToPackages(email: EmailAddress, pkgs: NonEmptyList[PackageName]) extends WebAction
+  object SubscribeToPackages {
+    def fromUrlForm(urlForm: UrlForm): Either[String, SubscribeToPackages] = {
+      for {
+        packages <- urlForm
+          .values
+          .get("packages")
+          .toRight("Packages key not found!")
+          // Manual eta expansion required here because of weird type inference bug
+          // Scala 2.13.0
+          .map(xs => NonEmptyList.fromFoldable(xs))
+          .flatMap(_.toRight("Received an empty list of packages to subscribe to!"))
+        emailAddress <- urlForm
+          .values.get("emailAddress")
+          .flatMap(_.headOption)
+          .toRight("Email address key not found!")
+      } yield SubscribeToPackages(EmailAddress(emailAddress), packages.map(PackageName.apply))
+    }
+  }
 
   sealed trait PersistenceAction
 
-  final case class SubscribeToPackagesFullName(email: Email, pkgs: NonEmptyList[FullPackage]) extends PersistenceAction
+  final case class SubscribeToPackagesFullName(email: EmailAddress, pkgs: NonEmptyList[FullPackage]) extends PersistenceAction
 
   final case class FullPackage(name: PackageName, homepage: String, anityaId: Int, packageId: Int)
 
   def emailActionToPersistenceAction(emailAction: EmailAction): PersistenceAction = emailAction match {
-    case unsubscribe: UnsubscribeEmailFromAllPackages => unsubscribe
+    case unsubscribe: UnsubscribeEmailFromPackage => unsubscribe
     case unsubscribeFromAll: UnsubscribeEmailFromAllPackages => unsubscribeFromAll
     case changeEmail: ChangeEmail => changeEmail
   }
@@ -100,18 +118,44 @@ object WebServer extends Logging {
       for {
         form <- request.as[UrlForm]
         _ <- IO(logger.info(s"We got this form: $form"))
-        response <- IncomingSubscriptionRequest.fromUrlForm(form) match {
+        response <- SubscribeToPackages.fromUrlForm(form) match {
           case Left(errMsg) =>
             BadRequest(errMsg)
           case Right(incomingSubscription) =>
             IO(logger.info(s"Persisting the following subscription: $incomingSubscription"))
-              .>>(persistSubscriptions(incomingSubscription).transact(Persistence.transactor))
-              .>>(emailSender.email(
-                to = incomingSubscription.emailAddress,
-                subject = s"Signed for notifications about ${incomingSubscription.packages.mkString(",")}",
-                content = s"You will get an email anytime one of the following packages gets a new version: ${incomingSubscription.packages.mkString(",")}"
-              ))
-              .>>(Ok("Successfully submitted form!"))
+              .>>{
+                webActionToPersistenceAction(incomingSubscription)
+                  .transact(Persistence.transactor)
+                  .flatMap{ errorIorPersistenceAction => errorIorPersistenceAction.traverse(Persistence.processAction) }
+                  .flatMap{
+                    case Ior.Both(NoPackagesFoundForNames(packageNames), _) =>
+                      val successfullyPersistedPackages =
+                        incomingSubscription
+                          .pkgs
+                          .toList
+                          .toSet
+                          .--(packageNames.toList.toSet)
+                          .toList
+                          .|>(xs => NonEmptyList.fromFoldable(xs))
+                      successfullyPersistedPackages
+                        .fold(().pure[IO]){
+                          emailSuccessfullySubscribedPackages(
+                            emailSender,
+                            incomingSubscription.email,
+                            _
+                          )
+                        }
+                        .>>(Ok("Successfully submitted form! (with some errors)"))
+                    case Ior.Left(err) =>
+                      BadRequest("You failed!")
+                    case Ior.Right(_) =>
+                      emailSuccessfullySubscribedPackages(
+                        emailSender,
+                        incomingSubscription.email,
+                        incomingSubscription.pkgs
+                      ) >> Ok("Successfully submitted form!")
+                  }
+              }
         }
       } yield response
     case request @ POST -> Root / "incomingEmailHook" =>
@@ -121,6 +165,18 @@ object WebServer extends Logging {
         _ <- Persistence.processAction(persistenceAction)
         response <- Ok("Processed inbound email!")
       } yield response
+  }
+
+  private def emailSuccessfullySubscribedPackages(
+    emailSender: Email,
+    emailAddress: EmailAddress,
+    packages: NonEmptyList[PackageName]
+  ): IO[Unit] = {
+    emailSender.email(
+      to = emailAddress,
+      subject = s"Signed for notifications about ${packages.map(_.str).mkString(",")}",
+      content = s"You will get an email anytime one of the following packages gets a new version: ${packages.map(_.str).mkString(",")}"
+    )
   }
 
   def persistSubscriptions(

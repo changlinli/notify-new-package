@@ -1,15 +1,16 @@
 package com.changlinli.releaseNotification
 
 import cats.effect.IO
+import com.changlinli.releaseNotification.WebServer.EmailAddress
 import com.sendgrid.{Method, Request, SendGrid}
 import com.sendgrid.helpers.mail.Mail
 import com.sendgrid.helpers.mail.objects.Content
 import com.sendgrid.helpers.mail.objects.{Email => SGEMail}
 
 class Email(sendGrid: SendGrid) {
-  def email(to: String, subject: String, content: String): IO[Unit] = IO {
+  def email(to: EmailAddress, subject: String, content: String): IO[Unit] = IO {
     val sendGridContent = new Content("text/plain", content)
-    val mail = new Mail(new SGEMail(Email.fromAddress), subject, new SGEMail(to), sendGridContent)
+    val mail = new Mail(new SGEMail(Email.fromAddress), subject, new SGEMail(to.str), sendGridContent)
     val request = new Request()
     request.setMethod(Method.POST)
     request.setEndpoint("mail/send")
