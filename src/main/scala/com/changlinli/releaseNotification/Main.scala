@@ -67,10 +67,6 @@ object Main extends MyIOApp with Logging {
       (address, config) => config.copy(ipAddress = address)
     }
 
-    opt[Unit]('d', "do-not-update-anitya-packages").action{
-
-    }
-
     opt[String]('u', name="anitya-website-url")
       .validate{
         url => Uri.fromString(url) match {
@@ -150,7 +146,7 @@ object Main extends MyIOApp with Logging {
 
   val routingKey = RoutingKey("#")
 
-  final case class DependencyUpdate(packageName: String, packageVersion: String, previousVersion: String, homepage: String) {
+  final case class DependencyUpdate(packageName: String, packageVersion: String, previousVersion: String, homepage: String, anityaId: Int) {
     def printEmailTitle: String = s"Package $packageName was just upgraded from " +
       s"version $previousVersion to $packageVersion"
 
@@ -185,11 +181,13 @@ object Main extends MyIOApp with Logging {
         projectVersion <- c.downField("project").downField("version").as[String]
         previousVersion <- c.downField("message").downField("old_version").as[String]
         homepage <- c.downField("project").downField("homepage").as[String]
+        anityaId <- c.downField("project").downField("id").as[Int]
       } yield DependencyUpdate(
         packageName = projectName,
         packageVersion = projectVersion,
         previousVersion = previousVersion,
-        homepage = homepage
+        homepage = homepage,
+        anityaId = anityaId
       )
     }
   }
@@ -262,7 +260,7 @@ object Main extends MyIOApp with Logging {
           .evalMap{
             case Right(value) =>
               for {
-                emailAddresses <- Persistence.retrieveAllEmailsWithPackageName(doobieTransactor, value.packageName)
+                emailAddresses <- Persistence.retrieveAllEmailsWithAnityaId(doobieTransactor, value.anityaId)
                 _ <- IO(s"All email addresses subscribed to ${value.packageName}: $emailAddresses")
                 emailAddressesSubscribedToAllUpdates <- Persistence.retrieveAllEmailsSubscribedToAll(doobieTransactor)
                 _ <- IO(s"All email addresses subscribed to ALL: $emailAddressesSubscribedToAllUpdates")

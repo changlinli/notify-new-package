@@ -12,6 +12,7 @@ import doobie.implicits._
 import doobie.Transactor
 import doobie.util.transactor.Transactor.Aux
 import grizzled.slf4j.Logging
+import org.sqlite.SQLiteConfig.JournalMode
 import org.sqlite.javax.SQLiteConnectionPoolDataSource
 
 import scala.concurrent.ExecutionContext
@@ -42,7 +43,7 @@ object Persistence extends CustomLogging {
 
   private val createAnityaIdIndex =
     sql"""
-         |CREATE INDEX anityaIdIndex ON packages(anityaId)
+         |CREATE INDEX IF NOT EXISTS anityaIdIndex ON packages(anityaId)
        """.stripMargin
 
   private val subscriptionTableName = "subscriptions"
@@ -79,7 +80,7 @@ object Persistence extends CustomLogging {
   }
 
   def retrievePackageByAnityaIdQuery(anityaId: Int): doobie.Query0[(Int, String, String, Int)] = {
-    sql"""SELECT (id, name, homepage, anityaId) FROM `packages` WHERE anityaId = $anityaId"""
+    sql"""SELECT id, name, homepage, anityaId FROM `packages` WHERE anityaId = $anityaId"""
       .queryWithLogHandler[(Int, String, String, Int)](doobieLogHandler)
   }
 
@@ -97,15 +98,13 @@ object Persistence extends CustomLogging {
     for {
       listOfIdNameHomepageAnityaId <- retrievePackageByAnityaIdQuery(anityaId).to[List]
       firstElemOpt = listOfIdNameHomepageAnityaId.headOption
-      _ <- firstElemOpt match {
+      result <- firstElemOpt match {
         case Some((currentId, currentName, currentHomepage, currentAnityaId)) =>
           updatePackageQuery(currentId, currentName, currentHomepage, currentAnityaId).run
         case None =>
           insertPackageQuery(packageName, homepage, anityaId).run
       }
-      _ <- insertPackageQuery(packageName, homepage, anityaId).run
-    } yield ()
-    insertPackageQuery(packageName, homepage, anityaId).run
+    } yield result
   }
 
   def retrievePackages(packageNames: NonEmptyList[PackageName])(implicit contextShift: ContextShift[IO]): ConnectionIO[Map[PackageName, FullPackage]] = {
@@ -180,6 +179,7 @@ object Persistence extends CustomLogging {
   def transactorA(fileName: String, connectionEC: ExecutionContext, blocker: Blocker)(implicit contextShift: ContextShift[IO]): Transactor[IO] = {
     val config = new org.sqlite.SQLiteConfig()
     config.enforceForeignKeys(true)
+    config.setJournalMode(JournalMode.WAL)
     val dataSource = new SQLiteConnectionPoolDataSource()
     dataSource.setUrl(s"jdbc:sqlite:$fileName")
     dataSource.setConfig(config)
@@ -195,19 +195,27 @@ object Persistence extends CustomLogging {
       pass = ""
     )
 
-  def retrieveAllEmailsSubscribedToAll(transactor: Transactor[IO])(implicit contextShift: ContextShift[IO]): IO[List[EmailAddress]] =
-    sql"""SELECT emailAddress FROM subscriptions INNER JOIN emails ON emails.id = subscriptions.emailId WHERE packageName='ALL'"""
+  val retrieveAllEmailsSubscribedToAllA: ConnectionIO[List[EmailAddress]] =
+    sql"""SELECT emailAddress FROM subscriptions INNER JOIN emails ON emails.id = subscriptions.emailId WHERE specialType='ALL'"""
       .query[String]
       .map(EmailAddress.apply)
       .to[List]
-      .transact(transactor)
 
-  def retrieveAllEmailsWithPackageName(transactor: Transactor[IO], packageName: String)(implicit contextShift: ContextShift[IO]): IO[List[EmailAddress]] =
-    sql"""SELECT emailAddress FROM subscriptions INNER JOIN emails ON emails.id = subscriptions.emailId WHERE packageName=$packageName"""
+  def retrieveAllEmailsSubscribedToAll(transactor: Transactor[IO])(implicit contextShift: ContextShift[IO]): IO[List[EmailAddress]] =
+    retrieveAllEmailsSubscribedToAllA.transact(transactor)
+
+  def retrieveAllEmailsWithAnityaIdA(anityaId: Int): ConnectionIO[List[EmailAddress]] =
+    sql"""SELECT emailAddress FROM subscriptions INNER JOIN emails ON emails.id = subscriptions.emailId INNER JOIN packages ON packages.id = subscriptions.packageId WHERE packages.anityaId=$anityaId"""
       .query[String]
       .map(EmailAddress.apply)
       .to[List]
-      .transact(transactor)
+
+  def retrieveAllEmailsWithAnityaId(
+    transactor: Transactor[IO],
+    anityaId: Int)(
+    implicit contextShift: ContextShift[IO]
+  ): IO[List[EmailAddress]] =
+    retrieveAllEmailsWithAnityaIdA(anityaId).transact(transactor)
 
   def insertIntoDB(name: String, packageName: String)(implicit contextShift: ContextShift[IO]): ConnectionIO[Int] =
     sql"""INSERT INTO subscriptions (email, packageName) values ($name, $packageName)""".update.run

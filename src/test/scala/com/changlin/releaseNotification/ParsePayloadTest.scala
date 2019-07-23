@@ -89,7 +89,8 @@ class ParsePayloadTest extends FlatSpec with Matchers {
       packageName = "check_gitlab",
       packageVersion = "0.4.0",
       previousVersion = "0.3.2",
-      homepage = "https://gitlab.com/6uellerBpanda/check_gitlab"
+      homepage = "https://gitlab.com/6uellerBpanda/check_gitlab",
+      anityaId = 20152
     )))
   }
 }

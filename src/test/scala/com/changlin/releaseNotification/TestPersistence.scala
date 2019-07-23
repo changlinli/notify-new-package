@@ -10,6 +10,8 @@ import com.changlinli.releaseNotification.WebServer.{EmailAddress, FullPackage, 
 import doobie._
 import doobie.implicits._
 import doobie.scalatest.IOChecker
+import doobie.util.{Colors, testing}
+import doobie.util.testing.Analyzable
 import org.scalatest._
 import org.sqlite.SQLiteException
 
@@ -41,6 +43,22 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
       _ <- Persistence.subscribeToPackagesFullName(EmailAddress("hello@hello.com"), NonEmptyList.of(FullPackage(name = PackageName("hello"), homepage = "hello.com", anityaId = 1, packageId = 1)))
     } yield ()
     action.transact(transactor).unsafeRunSync()
+  }
+  it should "succeed in retrieving all email addresses subscribed to all packages and return an empty list of them" in {
+    val action = for {
+      _ <- Persistence.initializeDatabase
+      result <- Persistence.retrieveAllEmailsSubscribedToAllA
+    } yield result
+    action.transact(transactor).unsafeRunSync() should be (List.empty)
+  }
+  it should "succeed in retrieving all email addresses subscribed to a to a dummy package" in {
+    val action = for {
+      _ <- Persistence.initializeDatabase
+      _ <- Persistence.upsertPackage("hello", "hello.com", 1)
+      _ <- Persistence.subscribeToPackagesFullName(EmailAddress("hello@hello.com"), NonEmptyList.of(FullPackage(name = PackageName("hello"), homepage = "hello.com", anityaId = 1, packageId = 1)))
+      result <- Persistence.retrieveAllEmailsWithAnityaIdA(1)
+    } yield result
+    action.transact(transactor).unsafeRunSync() should be (List(EmailAddress("hello@hello.com")))
   }
 
   override def transactor: doobie.Transactor[IO] = Persistence.transactorA(":memory:", connectionExecutionContext, blocker)
