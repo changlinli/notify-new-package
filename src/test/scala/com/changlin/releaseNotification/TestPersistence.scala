@@ -18,6 +18,7 @@ import scala.concurrent.ExecutionContext
 class TestPersistence extends FlatSpec with Matchers with IOChecker {
   private val threadPool = Executors.newFixedThreadPool(4)
   private val executionContext = ExecutionContext.fromExecutor(threadPool)
+  private val connectionExecutionContext = ExecutionContext.fromExecutor(Executors.newFixedThreadPool(4))
   private val blocker: Blocker = Blocker.liftExecutionContext(
     scala.concurrent.ExecutionContext.fromExecutorService(
       Executors.newCachedThreadPool
@@ -42,5 +43,5 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
     action.transact(transactor).unsafeRunSync()
   }
 
-  override def transactor: doobie.Transactor[IO] = Persistence.transactorA(":memory:", executionContext, blocker)
+  override def transactor: doobie.Transactor[IO] = Persistence.transactorA(":memory:", connectionExecutionContext, blocker)
 }

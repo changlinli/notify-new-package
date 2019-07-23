@@ -5,28 +5,33 @@ import java.security.{KeyStore, SecureRandom}
 import java.util.concurrent.Executors
 
 import cats.data.{Kleisli, NonEmptyList}
-import cats.effect.{Blocker, ConcurrentEffect, Effect, ExitCode, IO, IOApp}
+import cats.effect.{Blocker, ConcurrentEffect, Effect, ExitCode, IO, IOApp, Timer}
 import cats.implicits._
 import com.rabbitmq.client.DefaultSaslConfig
 import dev.profunktor.fs2rabbit.config.declaration.{DeclarationQueueConfig, Durable, NonAutoDelete, NonExclusive}
 import dev.profunktor.fs2rabbit.config.{Fs2RabbitConfig, Fs2RabbitNodeConfig}
 import dev.profunktor.fs2rabbit.effects.EnvelopeDecoder
 import dev.profunktor.fs2rabbit.interpreter.Fs2Rabbit
+import dev.profunktor.fs2rabbit.model
 import dev.profunktor.fs2rabbit.model.{AmqpEnvelope, ExchangeName, QueueName, RoutingKey}
 import doobie.implicits._
+import doobie.util.transactor.Transactor
 import grizzled.slf4j.Logging
 import io.circe.Decoder.Result
 import io.circe.{Decoder, DecodingFailure, HCursor, Json}
 import javax.net.ssl.{KeyManagerFactory, SSLContext, TrustManagerFactory}
 import org.http4s._
+import org.http4s.client.Client
+import org.http4s.client.blaze.BlazeClientBuilder
 import org.http4s.dsl.io._
 import org.http4s.implicits._
 import org.http4s.server.blaze.BlazeServerBuilder
 import scopt.OptionParser
 
+import scala.concurrent.ExecutionContext
 import scala.language.higherKinds
 
-object Main extends IOApp with Logging {
+object Main extends MyIOApp with Logging {
   sealed trait DatabaseCreationOption
   case object CreateFromScratch extends DatabaseCreationOption
   case object PreexistingDatabase extends DatabaseCreationOption
@@ -35,7 +40,8 @@ object Main extends IOApp with Logging {
     databaseFile: String = "sample.db",
     portNumber: Int = 8080,
     databaseCreationOpt: DatabaseCreationOption = PreexistingDatabase,
-    ipAddress: String = "127.0.0.1"
+    ipAddress: String = "127.0.0.1",
+    anityaUrl: Uri = uri"https://release-monitoring.org"
   )
 
   val cmdLineOptionParser: OptionParser[ServiceConfiguration] = new scopt.OptionParser[ServiceConfiguration]("notify-new-package") {
@@ -57,16 +63,26 @@ object Main extends IOApp with Logging {
       (address, config) => config.copy(ipAddress = address)
     }
 
+    opt[String]('u', name="anitya-website-url")
+      .validate{
+        url => Uri.fromString(url) match {
+          case Left(err) =>
+            failure(s"The argument passed as a URL ($url) does not seem to be a valid URL due to the following reason: ${err.message}")
+          case Right(_) =>
+            success
+        }
+      }
+      .action{
+        (url, config) =>
+          // We can use unsafeFromString because we already checked fromString
+          // previously. Yes Scopt is annoying.
+          config.copy(anityaUrl = Uri.unsafeFromString(url))
+      }
+
     help("help")
 
     version("version")
   }
-
-  private val blocker: Blocker = Blocker.liftExecutionContext(
-    scala.concurrent.ExecutionContext.fromExecutorService(
-      Executors.newCachedThreadPool
-    )
-  )
 
   val rabbitMQConfig = Fs2RabbitConfig(
     nodes = NonEmptyList.of(Fs2RabbitNodeConfig(host = "rabbitmq.fedoraproject.org", 5671)),
@@ -174,10 +190,22 @@ object Main extends IOApp with Logging {
     payload.as[DependencyUpdate]
   }
 
-  def persistSubscriptions(incomingSubscriptionRequest: IncomingSubscriptionRequest): doobie.ConnectionIO[List[Int]] =
-    incomingSubscriptionRequest
-      .packages
-      .traverse(pkg => Persistence.insertIntoDB(name = incomingSubscriptionRequest.emailAddress, packageName = pkg))
+
+  def processAllAnityaProjects(
+    client: Client[IO],
+    anityaPackageEndpoint: Uri,
+    itemsPerPage: Int,
+    transactor: Transactor[IO]
+  )(implicit timer: Timer[IO]): IO[Unit] = {
+    WebServer.requestAllAnityaProjects(client, anityaPackageEndpoint, itemsPerPage).map{
+      case Left(error) => IO(logger.warn(s"We blew up with $error when trying to update our Anitya database"))
+      case Right(projects) =>
+        projects
+          .traverse(Persistence.persistRawAnityaProject)
+          .transact(transactor)
+          .void
+    }
+  }
 
   override def run(args: List[String]): IO[ExitCode] = for {
     _ <- IO(System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "INFO"))
@@ -188,8 +216,14 @@ object Main extends IOApp with Logging {
     _ <- IO(logger.info(s"These are the commandline options we parsed: $cmdLineOpts"))
     emailSender <- Email.initialize
     fs2Rabbit <- generateFs2Rabbit
-    _ <- fs2Rabbit.createConnectionChannel.use { implicit channel =>
-      for {
+    allResources = for {
+      blazeClient <- BlazeClientBuilder[IO](mainExecutionContext).resource
+      fs2RabbitChannel <- fs2Rabbit.createConnectionChannel
+      doobieTransactor <- Persistence.createTransactor(cmdLineOpts.databaseFile)
+    } yield (blazeClient, fs2RabbitChannel, doobieTransactor)
+    _ <- allResources.use { case (blazeClient, fs2RabbitChannel, doobieTransactor) =>
+      implicit val channel: model.AMQPChannel = fs2RabbitChannel
+      val runRabbitListener = for {
         _ <- fs2Rabbit.declareQueue(
           DeclarationQueueConfig(
             queueName = queueName,
@@ -209,9 +243,9 @@ object Main extends IOApp with Logging {
           .evalMap{
             case Right(value) =>
               for {
-                emailAddresses <- Persistence.retrieveAllEmailsWithPackageName(value.packageName)
+                emailAddresses <- Persistence.retrieveAllEmailsWithPackageName(doobieTransactor, value.packageName)
                 _ <- IO(s"All email addresses subscribed to ${value.packageName}: $emailAddresses")
-                emailAddressesSubscribedToAllUpdates <- Persistence.retrieveAllEmailsSubscribedToAll
+                emailAddressesSubscribedToAllUpdates <- Persistence.retrieveAllEmailsSubscribedToAll(doobieTransactor)
                 _ <- IO(s"All email addresses subscribed to ALL: $emailAddressesSubscribedToAllUpdates")
                 _ <- (emailAddressesSubscribedToAllUpdates ++ emailAddresses).traverse{ emailAddress =>
                   logger.info(s"Emailing out an update of ${value.packageName} to $emailAddress")
@@ -227,6 +261,13 @@ object Main extends IOApp with Logging {
           }
           .compile
           .drain
+      } yield ()
+      val processAnityaInBackground = processAllAnityaProjects(blazeClient, cmdLineOpts.anityaUrl, 100, doobieTransactor)
+      for {
+        rabbitFiber <- runRabbitListener.start
+        anityaFiber <- processAnityaInBackground.start
+        _ <- rabbitFiber.join
+        _ <- anityaFiber.join
       } yield ()
     }.start
     _ <- WebServer.runWebServer(emailSender, cmdLineOpts.portNumber, cmdLineOpts.ipAddress, blocker)

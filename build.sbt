@@ -26,6 +26,7 @@ libraryDependencies += "org.http4s" %% "http4s-core" % "0.21.0-M1"
 libraryDependencies += "org.http4s" %% "http4s-dsl" % "0.21.0-M1"
 libraryDependencies += "org.http4s" %% "http4s-circe" % "0.21.0-M1"
 libraryDependencies += "org.http4s" %% "http4s-blaze-server" % "0.21.0-M1"
+libraryDependencies += "org.http4s" %% "http4s-blaze-client" % "0.21.0-M1"
 libraryDependencies += "com.github.scopt" %% "scopt" % "3.7.1"
 
 assemblyMergeStrategy in assembly := {

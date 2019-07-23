@@ -4,9 +4,9 @@ import java.io.File
 import java.util.concurrent.Executors
 
 import cats.data.NonEmptyList
-import cats.effect.{Blocker, ContextShift, IO}
+import cats.effect.{Blocker, ContextShift, IO, Resource}
 import cats.implicits._
-import com.changlinli.releaseNotification.WebServer.{Action, ChangeEmail, EmailAddress, FullPackage, PackageName, PersistenceAction, SubscribeToPackages, SubscribeToPackagesFullName, UnsubscribeEmailFromAllPackages, UnsubscribeEmailFromPackage}
+import com.changlinli.releaseNotification.WebServer.{Action, ChangeEmail, EmailAddress, FullPackage, PackageName, PersistenceAction, RawAnityaProject, SubscribeToPackages, SubscribeToPackagesFullName, UnsubscribeEmailFromAllPackages, UnsubscribeEmailFromPackage}
 import doobie._
 import doobie.implicits._
 import doobie.Transactor
@@ -132,21 +132,33 @@ object Persistence extends CustomLogging {
   }
 
   def unsubscribeEmailFromPackage(email: EmailAddress, packageName: PackageName): ConnectionIO[Int] = {
-    sql"""DELETE FROM packageSubscriptions WHERE id IN
-         |  (|SELECT subscriptions.id FROM emails INNER JOIN subscriptions ON emails.id = subscriptions.emailId WHERE emailAddress=${email.str}))
+    sql"""DELETE FROM subscriptions WHERE id IN
+         |  (SELECT subscriptions.id FROM emails INNER JOIN subscriptions ON emails.id = subscriptions.emailId WHERE emailAddress=${email.str}))
          |AND packageId IN (SELECT id FROM packages WHERE name = ${packageName.str})"""
       .update
       .run
   }
 
-  def transactorA(fileName: String, executionContext: ExecutionContext, blocker: Blocker)(implicit contextShift: ContextShift[IO]): Transactor[IO] = {
+  def persistRawAnityaProject(rawAnityaProject: RawAnityaProject): ConnectionIO[Int] = {
+    createPackage(rawAnityaProject.name, rawAnityaProject.homepage, rawAnityaProject.id)
+  }
+
+  def createTransactor(fileName: String)(implicit contextShift: ContextShift[IO]): Resource[IO, Transactor[IO]] = {
+    for {
+      connectionEC <- ExecutionContexts.fixedThreadPool[IO](32)
+      transactionEC <- ExecutionContexts.cachedThreadPool[IO]
+      blocker = Blocker.liftExecutionContext(transactionEC)
+    } yield transactorA(fileName, connectionEC, blocker)
+  }
+
+  def transactorA(fileName: String, connectionEC: ExecutionContext, blocker: Blocker)(implicit contextShift: ContextShift[IO]): Transactor[IO] = {
     val config = new org.sqlite.SQLiteConfig()
     config.enforceForeignKeys(true)
     val dataSource = new SQLiteConnectionPoolDataSource()
     dataSource.setUrl(s"jdbc:sqlite:$fileName")
     dataSource.setConfig(config)
 
-    Transactor.fromDataSource[IO](dataSource, executionContext, blocker)
+    Transactor.fromDataSource[IO](dataSource, connectionEC, blocker)
   }
 
   def transactor(implicit contextShift: ContextShift[IO]): Aux[IO, Unit] =
@@ -157,15 +169,15 @@ object Persistence extends CustomLogging {
       pass = ""
     )
 
-  def retrieveAllEmailsSubscribedToAll(implicit contextShift: ContextShift[IO]): IO[List[EmailAddress]] =
-    sql"""SELECT email FROM subscriptions WHERE packageName='ALL'"""
+  def retrieveAllEmailsSubscribedToAll(transactor: Transactor[IO])(implicit contextShift: ContextShift[IO]): IO[List[EmailAddress]] =
+    sql"""SELECT email FROM subscriptions INNER JOIN emails ON emails.id = subscriptions.emailId WHERE packageName='ALL'"""
       .query[String]
       .map(EmailAddress.apply)
       .to[List]
       .transact(transactor)
 
-  def retrieveAllEmailsWithPackageName(packageName: String)(implicit contextShift: ContextShift[IO]): IO[List[EmailAddress]] =
-    sql"""SELECT email FROM subscriptions WHERE packageName=$packageName"""
+  def retrieveAllEmailsWithPackageName(transactor: Transactor[IO], packageName: String)(implicit contextShift: ContextShift[IO]): IO[List[EmailAddress]] =
+    sql"""SELECT email FROM subscriptions INNER JOIN emails ON emails.id = subscriptions.emailId WHERE packageName=$packageName"""
       .query[String]
       .map(EmailAddress.apply)
       .to[List]

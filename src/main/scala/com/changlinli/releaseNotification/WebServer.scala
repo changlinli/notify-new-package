@@ -1,16 +1,25 @@
 package com.changlinli.releaseNotification
 
-import cats.data.{Ior, NonEmptyList}
-import cats.effect.{Blocker, ContextShift, Effect, IO, Timer}
+import java.util.concurrent.TimeUnit
+
+import cats.data.{EitherT, Ior, NonEmptyList}
+import cats.effect.{Blocker, ConcurrentEffect, ContextShift, Effect, IO, Timer}
 import cats.implicits._
 import doobie.free.connection.ConnectionIO
 import doobie.implicits._
 import grizzled.slf4j.Logging
+import io.circe.{Decoder, DecodingFailure, Encoder, Json}
+import io.circe.parser
 import org.http4s._
+import org.http4s.circe._
+import org.http4s.client.Client
+import org.http4s.client.blaze.BlazeClientBuilder
 import org.http4s.dsl.io._
 import org.http4s.implicits._
 import org.http4s.server.blaze.BlazeServerBuilder
 
+import scala.concurrent.ExecutionContext
+import scala.concurrent.duration.FiniteDuration
 import scala.language.higherKinds
 
 object WebServer extends Logging {
@@ -58,8 +67,137 @@ object WebServer extends Logging {
     case changeEmail: ChangeEmail => changeEmail
   }
 
-  sealed trait Error
+  final case class RawAnityaProjectResultPage(
+    items: List[RawAnityaProject],
+    items_per_page: Int,
+    page: Int,
+    total_items: Int
+  )
+
+  object RawAnityaProjectResultPage {
+    import io.circe.generic.semiauto._
+    implicit val decodeAnityaProjectResultPage: Decoder[RawAnityaProjectResultPage] = deriveDecoder
+    implicit val encodeAnityaProjectResultPage: Encoder[RawAnityaProjectResultPage] = deriveEncoder
+  }
+
+  final case class RawAnityaProject(
+    backend: String,
+    created_on: BigDecimal,
+    ecosystem: String,
+    homepage: String,
+    id: Int,
+    name: String,
+    regex: Option[String],
+    updated_on: BigDecimal,
+    version: Option[String],
+    version_url: Option[String],
+    versions: List[String]
+  )
+
+  object RawAnityaProject {
+    import io.circe.generic.semiauto._
+    implicit val decodeAnityaProject: Decoder[RawAnityaProject] = deriveDecoder
+    implicit val encodeAnityaProject: Encoder[RawAnityaProject] = deriveEncoder
+  }
+
+  def requestByProjectName(client: Client[IO], anityaPackageEndpoint: Uri, projectName: String, executionContext: ExecutionContext): IO[Either[Error, RawAnityaProject]] = {
+    val requestUrl = anityaPackageEndpoint / "api" / "v2" / "packages" +? ("name", projectName)
+    implicit val contextShift: ContextShift[IO] = IO.contextShift(executionContext)
+    client
+      .expect[Json](requestUrl)
+      .map{ json =>
+        Decoder[RawAnityaProjectResultPage].decodeJson(json).leftMap(AnityaProjectJsonWasInUnexpectedFormat(json, _))
+      }
+      .map{ result =>
+        result
+          .flatMap(page => page.items.headOption.toRight(ProjectNameNotFoundInAnitya(projectName)))
+      }
+  }
+
+  type ErrorTIO[A] = EitherT[IO, Error, A]
+
+  type UnexpectedFormatTIO[A] = EitherT[IO, AnityaProjectJsonWasInUnexpectedFormat, A]
+
+  private def liftToErrorT[A](x: IO[A]): ErrorTIO[A] = EitherT.liftF(x)
+
+  def requestProjectByPage(
+    client: Client[IO],
+    anityaPackageEndpoint: Uri,
+    itemsPerPage: Int,
+    currentPageIdx: Int
+  )(implicit contextShift: ContextShift[IO]): IO[Either[AnityaProjectJsonWasInUnexpectedFormat, RawAnityaProjectResultPage]] = {
+    val requestUrl = anityaPackageEndpoint / "api" / "v2" / "projects" / "" +? ("items_per_page", itemsPerPage) +? ("page", currentPageIdx)
+    val request = Request[IO](Method.GET, requestUrl)
+    logger.info(s"WE'RE REQUESTING A PROJECT BY PAGE... for this url: $requestUrl")
+    client
+      .fetchAs[String](request)
+      .attempt
+      .flatMap{
+        strOrErr =>
+          logger.info(s"WETIAWEIOTIAWOEHTAWE: $strOrErr")
+          strOrErr
+            .fold[IO[String]](IO.raiseError, x => IO(x))
+            .map(parser.parse)
+            .flatMap(_.fold(IO.raiseError, x => IO(x)))
+      }
+      .attempt
+      .flatMap{
+        case Right(json) =>
+          logger.info(s"Received this JSON from the Anitya web server about packages: $json")
+          val decodeResult = Decoder[RawAnityaProjectResultPage].decodeJson(json).leftMap(AnityaProjectJsonWasInUnexpectedFormat(json, _))
+          IO(logger.info(s"THIS WAS THE RESULT AFTER DECODING: $decodeResult")) *>
+            IO(decodeResult)
+        case Left(err) =>
+          logger.error("We blew up!", err)
+          IO.raiseError(err)
+      }
+  }
+
+  def requestAllAnityaProjectResultPages(
+    client: Client[IO],
+    anityaPackageEndpoint: Uri,
+    itemsPerPage: Int
+  )(implicit contextShift: ContextShift[IO], timer: Timer[IO]): IO[Either[Error, NonEmptyList[RawAnityaProjectResultPage]]] = {
+    val firstCall = requestProjectByPage(client, anityaPackageEndpoint, itemsPerPage, 1)
+      .|>(EitherT.apply)
+      .map(NonEmptyList.of(_))
+    val result = for {
+      firstResult <- firstCall
+      allPages <- cats.Monad[UnexpectedFormatTIO].iterateWhileM(firstResult){
+        pages =>
+          val lastPage = pages.head
+          val webRequest =
+            requestProjectByPage(client, anityaPackageEndpoint, itemsPerPage, lastPage.page + 1)
+              .|>(EitherT.apply)
+              .map(_ :: pages)
+          // To make sure we don't overwhelm the web server
+          val sleep =  EitherT.liftF[IO, AnityaProjectJsonWasInUnexpectedFormat, Unit](IO(logger.info("WJREIOAJWOEIRJAWRJ SLEEPING!")) *> IO.sleep(FiniteDuration(1, TimeUnit.SECONDS)))
+          webRequest <* sleep
+      }{ pages =>
+        val currentPage = pages.head
+        val numOfRemainingItems = currentPage.total_items - currentPage.items_per_page * currentPage.page
+        println(s"WJEROAWJEPORJAWOPEJRPOAJOWEPRJAPOWEPROWARWEP This is our numOfRemainingItems: $numOfRemainingItems")
+        numOfRemainingItems > 0
+      }
+    } yield allPages
+    result.value
+  }
+
+  def requestAllAnityaProjects(
+    client: Client[IO],
+    anityaPackageEndpoint: Uri,
+    itemsPerPage: Int
+  )(implicit contextShift: ContextShift[IO], timer: Timer[IO]): IO[Either[Error, List[RawAnityaProject]]] = {
+    requestAllAnityaProjectResultPages(client, anityaPackageEndpoint, itemsPerPage)
+      .|>(EitherT.apply)
+      .map(pages => pages.toList.flatMap(page => page.items))
+      .value
+  }
+
+  sealed trait Error extends Product with Serializable
   final case class NoPackagesFoundForNames(packageNames: NonEmptyList[PackageName]) extends Error
+  final case class AnityaProjectJsonWasInUnexpectedFormat(json: Json, error: DecodingFailure) extends Error
+  final case class ProjectNameNotFoundInAnitya(projectName: String) extends Error
 
   def webActionToPersistenceAction(webAction: WebAction)(implicit contextShift: ContextShift[IO]): ConnectionIO[Ior[Error, PersistenceAction]] =
     webAction match {
@@ -128,7 +266,7 @@ object WebServer extends Logging {
                   .transact(Persistence.transactor)
                   .flatMap{ errorIorPersistenceAction => errorIorPersistenceAction.traverse(Persistence.processAction) }
                   .flatMap{
-                    case Ior.Both(NoPackagesFoundForNames(packageNames), _) =>
+                    case Ior.Both(err @ NoPackagesFoundForNames(packageNames), _) =>
                       val successfullyPersistedPackages =
                         incomingSubscription
                           .pkgs
@@ -145,9 +283,9 @@ object WebServer extends Logging {
                             _
                           )
                         }
-                        .>>(Ok("Successfully submitted form! (with some errors)"))
+                        .>>(Ok(s"Successfully submitted form! (with some errors: $err)"))
                     case Ior.Left(err) =>
-                      BadRequest("You failed!")
+                      BadRequest(s"You failed! $err")
                     case Ior.Right(_) =>
                       emailSuccessfullySubscribedPackages(
                         emailSender,
