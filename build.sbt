@@ -6,6 +6,8 @@ version := "0.1.0"
 
 scalaVersion := "2.13.0"
 
+lazy val http4sVersion = "0.21.0-M2"
+
 libraryDependencies += "org.typelevel" %% "cats-core" % "2.0.0-M4"
 libraryDependencies += "dev.profunktor" %% "fs2-rabbit" % "2.0.0-SNAPSHOT"
 libraryDependencies += "dev.profunktor" %% "fs2-rabbit-circe" % "2.0.0-SNAPSHOT"
@@ -22,11 +24,11 @@ libraryDependencies += "org.tpolecat" %% "doobie-core" % "0.8.0-M1"
 libraryDependencies += "org.tpolecat" %% "doobie-hikari" % "0.8.0-M1"
 libraryDependencies += "org.tpolecat" %% "doobie-scalatest" % "0.8.0-M1"
 libraryDependencies += "org.xerial" % "sqlite-jdbc" % "3.23.1"
-libraryDependencies += "org.http4s" %% "http4s-core" % "0.21.0-M1"
-libraryDependencies += "org.http4s" %% "http4s-dsl" % "0.21.0-M1"
-libraryDependencies += "org.http4s" %% "http4s-circe" % "0.21.0-M1"
-libraryDependencies += "org.http4s" %% "http4s-blaze-server" % "0.21.0-M1"
-libraryDependencies += "org.http4s" %% "http4s-blaze-client" % "0.21.0-M1"
+libraryDependencies += "org.http4s" %% "http4s-core" % http4sVersion
+libraryDependencies += "org.http4s" %% "http4s-dsl" % http4sVersion
+libraryDependencies += "org.http4s" %% "http4s-circe" % http4sVersion
+libraryDependencies += "org.http4s" %% "http4s-blaze-server" % http4sVersion
+libraryDependencies += "org.http4s" %% "http4s-blaze-client" % http4sVersion
 libraryDependencies += "com.github.scopt" %% "scopt" % "3.7.1"
 
 assemblyMergeStrategy in assembly := {

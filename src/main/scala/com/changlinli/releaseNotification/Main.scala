@@ -2,11 +2,13 @@ package com.changlinli.releaseNotification
 
 import java.io.FileInputStream
 import java.security.{KeyStore, SecureRandom}
-import java.util.concurrent.Executors
+import java.util.concurrent.{Executors, TimeUnit}
 
+import cats.Monad
 import cats.data.{Kleisli, NonEmptyList}
 import cats.effect.{Blocker, ConcurrentEffect, Effect, ExitCode, IO, IOApp, Timer}
 import cats.implicits._
+import com.changlinli.releaseNotification.WebServer.{AnityaProjectJsonWasInUnexpectedFormat, RawAnityaProjectResultPage}
 import com.rabbitmq.client.DefaultSaslConfig
 import dev.profunktor.fs2rabbit.config.declaration.{DeclarationQueueConfig, Durable, NonAutoDelete, NonExclusive}
 import dev.profunktor.fs2rabbit.config.{Fs2RabbitConfig, Fs2RabbitNodeConfig}
@@ -21,7 +23,7 @@ import io.circe.Decoder.Result
 import io.circe.{Decoder, DecodingFailure, HCursor, Json}
 import javax.net.ssl.{KeyManagerFactory, SSLContext, TrustManagerFactory}
 import org.http4s._
-import org.http4s.client.Client
+import org.http4s.client.{Client, JavaNetClientBuilder}
 import org.http4s.client.blaze.BlazeClientBuilder
 import org.http4s.dsl.io._
 import org.http4s.implicits._
@@ -29,6 +31,8 @@ import org.http4s.server.blaze.BlazeServerBuilder
 import scopt.OptionParser
 
 import scala.concurrent.ExecutionContext
+import scala.concurrent.duration.FiniteDuration
+import scala.io.Source
 import scala.language.higherKinds
 
 object Main extends MyIOApp with Logging {
@@ -156,7 +160,7 @@ object Main extends MyIOApp with Logging {
     RoutingKey("org.fedoraproject.prod.hotness.update.bug.file")
   )
 
-  sealed trait Error
+  sealed trait Error extends Exception
   final case class PayloadParseFailure(decodingFailure: DecodingFailure, jsonAttempted: Json) extends Error
   final case class IncorrectRoutingKey(routingKeyObserved: RoutingKey) extends Error
 
@@ -197,18 +201,29 @@ object Main extends MyIOApp with Logging {
     itemsPerPage: Int,
     transactor: Transactor[IO]
   )(implicit timer: Timer[IO]): IO[Unit] = {
-    WebServer.requestAllAnityaProjects(client, anityaPackageEndpoint, itemsPerPage).map{
-      case Left(error) => IO(logger.warn(s"We blew up with $error when trying to update our Anitya database"))
-      case Right(projects) =>
-        projects
-          .traverse(Persistence.persistRawAnityaProject)
-          .transact(transactor)
-          .void
-    }
+    Monad[IO].iterateWhileM(1){ page =>
+      logger.info(s"Processing page number: $page")
+      val processSingleProjectPage = WebServer
+        .requestProjectByPage(client, anityaPackageEndpoint, itemsPerPage, page)
+        .flatMap{
+          _.traverse{
+            pageOfResults =>
+              logger.info(s"About to persist this: $pageOfResults")
+              pageOfResults
+                .items
+                .traverse(Persistence.persistRawAnityaProject)
+                .transact(transactor)
+                .as(pageOfResults)
+          }
+        }
+      processSingleProjectPage.as(page + 1) <* timer.sleep(FiniteDuration(1, TimeUnit.SECONDS))
+    }{
+      page => page < 1000
+    }.void
   }
 
   override def run(args: List[String]): IO[ExitCode] = for {
-    _ <- IO(System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "INFO"))
+    _ <- IO(System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "DEBUG"))
     cmdLineOpts <- cmdLineOptionParser.parse(args, ServiceConfiguration()) match {
       case Some(configuration) => configuration.pure[IO]
       case None => Effect[IO].raiseError[ServiceConfiguration](new Exception("Bad command line options"))
@@ -217,11 +232,11 @@ object Main extends MyIOApp with Logging {
     emailSender <- Email.initialize
     fs2Rabbit <- generateFs2Rabbit
     allResources = for {
-      blazeClient <- BlazeClientBuilder[IO](mainExecutionContext).resource
+      blazeClient <- JavaNetClientBuilder[IO](blocker).resource
       fs2RabbitChannel <- fs2Rabbit.createConnectionChannel
       doobieTransactor <- Persistence.createTransactor(cmdLineOpts.databaseFile)
     } yield (blazeClient, fs2RabbitChannel, doobieTransactor)
-    _ <- allResources.use { case (blazeClient, fs2RabbitChannel, doobieTransactor) =>
+    listenerFiber <- allResources.use { case (blazeClient, fs2RabbitChannel, doobieTransactor) =>
       implicit val channel: model.AMQPChannel = fs2RabbitChannel
       val runRabbitListener = for {
         _ <- fs2Rabbit.declareQueue(
@@ -264,12 +279,15 @@ object Main extends MyIOApp with Logging {
       } yield ()
       val processAnityaInBackground = processAllAnityaProjects(blazeClient, cmdLineOpts.anityaUrl, 100, doobieTransactor)
       for {
+        _ <- Persistence.initializeDatabase.transact(doobieTransactor)
         rabbitFiber <- runRabbitListener.start
         anityaFiber <- processAnityaInBackground.start
         _ <- rabbitFiber.join
         _ <- anityaFiber.join
       } yield ()
     }.start
-    _ <- WebServer.runWebServer(emailSender, cmdLineOpts.portNumber, cmdLineOpts.ipAddress, blocker)
+    webServerFiber <- WebServer.runWebServer(emailSender, cmdLineOpts.portNumber, cmdLineOpts.ipAddress, blocker).start
+    _ <- listenerFiber.join
+    _ <- webServerFiber.join
   } yield ExitCode.Success
 }

@@ -129,8 +129,11 @@ object WebServer extends Logging {
     val requestUrl = anityaPackageEndpoint / "api" / "v2" / "projects" / "" +? ("items_per_page", itemsPerPage) +? ("page", currentPageIdx)
     val request = Request[IO](Method.GET, requestUrl)
     logger.info(s"WE'RE REQUESTING A PROJECT BY PAGE... for this url: $requestUrl")
-    client
-      .fetchAs[String](request)
+    val clientRequest = client.fetchAs[String](request)
+    implicit val timer: Timer[IO] = ThreadPools.timer
+    IO.race(clientRequest, IO.sleep(FiniteDuration(5, TimeUnit.SECONDS)) *> IO.raiseError(new Exception("WEIORAOIWEJROIR")))
+      .map(_.fold(identity, identity))
+      .flatTap(str => IO(logger.info(s"This is what came out of our request! $str")))
       .attempt
       .flatMap{
         strOrErr =>
@@ -194,7 +197,7 @@ object WebServer extends Logging {
       .value
   }
 
-  sealed trait Error extends Product with Serializable
+  sealed trait Error extends Exception with Product with Serializable
   final case class NoPackagesFoundForNames(packageNames: NonEmptyList[PackageName]) extends Error
   final case class AnityaProjectJsonWasInUnexpectedFormat(json: Json, error: DecodingFailure) extends Error
   final case class ProjectNameNotFoundInAnitya(projectName: String) extends Error

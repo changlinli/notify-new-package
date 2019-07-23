@@ -21,7 +21,7 @@ object Persistence extends CustomLogging {
 
   private val createEmailsTable =
     sql"""
-         |CREATE TABLE `emails` (
+         |CREATE TABLE IF NOT EXISTS `emails` (
          |`id` INTEGER NOT NULL,
          |`emailAddress` TEXT NOT NULL,
          |UNIQUE(`emailAddress`),
@@ -31,7 +31,7 @@ object Persistence extends CustomLogging {
 
   private val createPackagesTable =
     sql"""
-         |CREATE TABLE `packages` (
+         |CREATE TABLE IF NOT EXISTS `packages` (
          |`id` INTEGER NOT NULL,
          |`name` TEXT NOT NULL,
          |`homepage` TEXT NOT NULL,
@@ -44,7 +44,7 @@ object Persistence extends CustomLogging {
 
   private val createSubscriptionsTable =
     sql"""
-         |CREATE TABLE `subscriptions` (
+         |CREATE TABLE IF NOT EXISTS `subscriptions` (
          |`id` INTEGER NOT NULL,
          |`emailId` INTEGER NOT NULL,
          |`packageId` INTEGER,
@@ -170,14 +170,14 @@ object Persistence extends CustomLogging {
     )
 
   def retrieveAllEmailsSubscribedToAll(transactor: Transactor[IO])(implicit contextShift: ContextShift[IO]): IO[List[EmailAddress]] =
-    sql"""SELECT email FROM subscriptions INNER JOIN emails ON emails.id = subscriptions.emailId WHERE packageName='ALL'"""
+    sql"""SELECT emailAddress FROM subscriptions INNER JOIN emails ON emails.id = subscriptions.emailId WHERE packageName='ALL'"""
       .query[String]
       .map(EmailAddress.apply)
       .to[List]
       .transact(transactor)
 
   def retrieveAllEmailsWithPackageName(transactor: Transactor[IO], packageName: String)(implicit contextShift: ContextShift[IO]): IO[List[EmailAddress]] =
-    sql"""SELECT email FROM subscriptions INNER JOIN emails ON emails.id = subscriptions.emailId WHERE packageName=$packageName"""
+    sql"""SELECT emailAddress FROM subscriptions INNER JOIN emails ON emails.id = subscriptions.emailId WHERE packageName=$packageName"""
       .query[String]
       .map(EmailAddress.apply)
       .to[List]
