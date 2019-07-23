@@ -40,6 +40,11 @@ object Persistence extends CustomLogging {
          |)
        """.stripMargin
 
+  private val createAnityaIdIndex =
+    sql"""
+         |CREATE INDEX anityaIdIndex ON packages(anityaId)
+       """.stripMargin
+
   private val subscriptionTableName = "subscriptions"
 
   private val createSubscriptionsTable =
@@ -73,13 +78,34 @@ object Persistence extends CustomLogging {
     }
   }
 
-  def createPackageQuery(packageName: String, homepage: String, anityaId: Int): doobie.Update0 = {
+  def retrievePackageByAnityaIdQuery(anityaId: Int): doobie.Query0[(Int, String, String, Int)] = {
+    sql"""SELECT (id, name, homepage, anityaId) FROM `packages` WHERE anityaId = $anityaId"""
+      .queryWithLogHandler[(Int, String, String, Int)](doobieLogHandler)
+  }
+
+  def insertPackageQuery(packageName: String, homepage: String, anityaId: Int): doobie.Update0 = {
     sql"""INSERT INTO `packages` (name, homepage, anityaId) VALUES ($packageName, $homepage, $anityaId)"""
       .updateWithLogHandler(doobieLogHandler)
   }
 
-  def createPackage(packageName: String, homepage: String, anityaId: Int): ConnectionIO[Int] = {
-    createPackageQuery(packageName, homepage, anityaId).run
+  def updatePackageQuery(id: Int, packageName: String, homepage: String, anityaId: Int): doobie.Update0 = {
+    sql"""UPDATE `packages` set name=$packageName, homepage=$homepage, anityaId=$anityaId WHERE id=$id"""
+      .updateWithLogHandler(doobieLogHandler)
+  }
+
+  def upsertPackage(packageName: String, homepage: String, anityaId: Int): ConnectionIO[Int] = {
+    for {
+      listOfIdNameHomepageAnityaId <- retrievePackageByAnityaIdQuery(anityaId).to[List]
+      firstElemOpt = listOfIdNameHomepageAnityaId.headOption
+      _ <- firstElemOpt match {
+        case Some((currentId, currentName, currentHomepage, currentAnityaId)) =>
+          updatePackageQuery(currentId, currentName, currentHomepage, currentAnityaId).run
+        case None =>
+          insertPackageQuery(packageName, homepage, anityaId).run
+      }
+      _ <- insertPackageQuery(packageName, homepage, anityaId).run
+    } yield ()
+    insertPackageQuery(packageName, homepage, anityaId).run
   }
 
   def retrievePackages(packageNames: NonEmptyList[PackageName])(implicit contextShift: ContextShift[IO]): ConnectionIO[Map[PackageName, FullPackage]] = {
@@ -140,7 +166,7 @@ object Persistence extends CustomLogging {
   }
 
   def persistRawAnityaProject(rawAnityaProject: RawAnityaProject): ConnectionIO[Int] = {
-    createPackage(rawAnityaProject.name, rawAnityaProject.homepage, rawAnityaProject.id)
+    upsertPackage(rawAnityaProject.name, rawAnityaProject.homepage, rawAnityaProject.id)
   }
 
   def createTransactor(fileName: String)(implicit contextShift: ContextShift[IO]): Resource[IO, Transactor[IO]] = {
@@ -194,5 +220,6 @@ object Persistence extends CustomLogging {
     _ <- createEmailsTable.updateWithLogHandler(doobieLogHandler).run
     _ <- createPackagesTable.updateWithLogHandler(doobieLogHandler).run
     _ <- createSubscriptionsTable.updateWithLogHandler(doobieLogHandler).run
+    _ <- createAnityaIdIndex.updateWithLogHandler(doobieLogHandler).run
   } yield ()
 }

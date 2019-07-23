@@ -37,7 +37,7 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
   it should "succeed if the package exists" in {
     val action = for {
       _ <- Persistence.initializeDatabase
-      _ <- Persistence.createPackage("hello", "hello.com", 1)
+      _ <- Persistence.upsertPackage("hello", "hello.com", 1)
       _ <- Persistence.subscribeToPackagesFullName(EmailAddress("hello@hello.com"), NonEmptyList.of(FullPackage(name = PackageName("hello"), homepage = "hello.com", anityaId = 1, packageId = 1)))
     } yield ()
     action.transact(transactor).unsafeRunSync()
