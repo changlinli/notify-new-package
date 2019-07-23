@@ -203,7 +203,7 @@ object Main extends MyIOApp with Logging {
     itemsPerPage: Int,
     transactor: Transactor[IO]
   )(implicit timer: Timer[IO]): IO[Unit] = {
-    Monad[IO].iterateWhileM(1){ page =>
+    fs2.Stream.unfoldEval(1){ page =>
       logger.info(s"Processing page number: $page")
       val processSingleProjectPage = WebServer
         .requestProjectByPage(client, anityaPackageEndpoint, itemsPerPage, page)
@@ -218,14 +218,27 @@ object Main extends MyIOApp with Logging {
                 .as(pageOfResults)
           }
         }
-      processSingleProjectPage.as(page + 1) <* timer.sleep(FiniteDuration(1, TimeUnit.SECONDS))
-    }{
-      page => page < 1000
-    }.void
+      processSingleProjectPage.map{
+        case Right(resultPage) =>
+          if (resultPage.items_per_page * page < resultPage.total_items) {
+            Some(((), page + 1))
+          } else {
+            None
+          }
+        case Left(err) =>
+          logger.error(s"We blew up when doing processing an Anitya page!", err)
+          Some((), page)
+      }
+    }
+      .map(Right.apply)
+      .interleave(fs2.Stream.sleep(FiniteDuration(1, TimeUnit.SECONDS)).repeat.map(Left.apply))
+      .collect{case Right(x) => x}
+      .compile
+      .drain
   }
 
   override def run(args: List[String]): IO[ExitCode] = for {
-    _ <- IO(System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "DEBUG"))
+    _ <- IO(System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "INFO"))
     cmdLineOpts <- cmdLineOptionParser.parse(args, ServiceConfiguration()) match {
       case Some(configuration) => configuration.pure[IO]
       case None => Effect[IO].raiseError[ServiceConfiguration](new Exception("Bad command line options"))
