@@ -67,6 +67,10 @@ object Main extends MyIOApp with Logging {
       (address, config) => config.copy(ipAddress = address)
     }
 
+    opt[Unit]('d', "do-not-update-anitya-packages").action{
+
+    }
+
     opt[String]('u', name="anitya-website-url")
       .validate{
         url => Uri.fromString(url) match {
@@ -279,7 +283,10 @@ object Main extends MyIOApp with Logging {
       } yield ()
       val processAnityaInBackground = processAllAnityaProjects(blazeClient, cmdLineOpts.anityaUrl, 100, doobieTransactor)
       for {
-        _ <- Persistence.initializeDatabase.transact(doobieTransactor)
+        _ <- cmdLineOpts.databaseCreationOpt match {
+          case PreexistingDatabase => IO.unit
+          case CreateFromScratch => Persistence.initializeDatabase.transact(doobieTransactor)
+        }
         rabbitFiber <- runRabbitListener.start
         anityaFiber <- processAnityaInBackground.start
         _ <- rabbitFiber.join
