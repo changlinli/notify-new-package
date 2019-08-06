@@ -13,7 +13,6 @@ import io.circe.parser
 import org.http4s._
 import org.http4s.circe._
 import org.http4s.client.Client
-import org.http4s.client.blaze.BlazeClientBuilder
 import org.http4s.dsl.io._
 import org.http4s.implicits._
 import org.http4s.server.blaze.BlazeServerBuilder
@@ -22,7 +21,7 @@ import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.FiniteDuration
 import scala.language.higherKinds
 
-object WebServer extends Logging {
+object WebServer extends CustomLogging {
 
   final case class EmailAddress(str: String)
 
@@ -258,12 +257,12 @@ object WebServer extends Logging {
     case request @ POST -> Root / "submitEmailAddress" =>
       for {
         form <- request.as[UrlForm]
-        _ <- IO(logger.info(s"We got this form: $form"))
+        _ <- infoIO(s"We got this form: $form")
         response <- SubscribeToPackages.fromUrlForm(form) match {
           case Left(errMsg) =>
             BadRequest(errMsg)
           case Right(incomingSubscription) =>
-            IO(logger.info(s"Persisting the following subscription: $incomingSubscription"))
+            infoIO(s"Persisting the following subscription: $incomingSubscription")
               .>>{
                 webActionToPersistenceAction(incomingSubscription)
                   .transact(Persistence.transactor)
@@ -299,13 +298,16 @@ object WebServer extends Logging {
               }
         }
       } yield response
-    case request @ POST -> Root / "incomingEmailHook" =>
-      for {
-        action <- processInboundWebhook(request)
-        persistenceAction = emailActionToPersistenceAction(action)
-        _ <- Persistence.processAction(persistenceAction)
-        response <- Ok("Processed inbound email!")
-      } yield response
+    case request @ GET -> Root / "incomingEmail" =>
+      Ok(s"Yep this email hook is responding to GET requests!")
+    case request @ POST -> Root / "incomingEmail" =>
+      Ok(s"This is the request we're getting for the POST: $request")
+//      for {
+//        action <- processInboundWebhook(request)
+//        persistenceAction = emailActionToPersistenceAction(action)
+//        _ <- Persistence.processAction(persistenceAction)
+//        response <- Ok("Processed inbound email!")
+//      } yield response
   }
 
   private def emailSuccessfullySubscribedPackages(

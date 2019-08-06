@@ -1,5 +1,6 @@
 package com.changlinli.releaseNotification
 
+import cats.effect.IO
 import doobie.util.log.{ExecFailure, LogHandler, ProcessingFailure, Success}
 import grizzled.slf4j.Logging
 
@@ -35,4 +36,6 @@ trait CustomLogging extends Logging {
                           |   failure = ${t.getMessage}
           """.stripMargin)
   }
+
+  def infoIO(msg: => Any): IO[Unit] = IO(logger.info(msg))
 }
