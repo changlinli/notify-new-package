@@ -3,14 +3,12 @@ package com.changlinli.releaseNotification
 import java.util.concurrent.TimeUnit
 
 import cats.data.{EitherT, Ior, NonEmptyList}
-import cats.effect.{Blocker, ConcurrentEffect, ContextShift, Effect, IO, Timer}
+import cats.effect.{Blocker, ContextShift, Effect, IO, Timer}
 import cats.implicits._
 import com.changlinli.releaseNotification.ids.AnityaId
 import doobie.free.connection.ConnectionIO
 import doobie.implicits._
-import grizzled.slf4j.Logging
-import io.circe.{Decoder, DecodingFailure, Encoder, Json}
-import io.circe.parser
+import io.circe._
 import org.http4s._
 import org.http4s.circe._
 import org.http4s.client.Client
@@ -141,7 +139,7 @@ object WebServer extends CustomLogging {
           logger.info(s"WETIAWEIOTIAWOEHTAWE: $strOrErr")
           strOrErr
             .fold[IO[String]](IO.raiseError, x => IO(x))
-            .map(parser.parse)
+            .map(io.circe.parser.parse)
             .flatMap(_.fold(IO.raiseError, x => IO(x)))
       }
       .attempt
