@@ -5,6 +5,7 @@ import java.util.concurrent.TimeUnit
 import cats.data.{EitherT, Ior, NonEmptyList}
 import cats.effect.{Blocker, ConcurrentEffect, ContextShift, Effect, IO, Timer}
 import cats.implicits._
+import com.changlinli.releaseNotification.ids.AnityaId
 import doobie.free.connection.ConnectionIO
 import doobie.implicits._
 import grizzled.slf4j.Logging
@@ -34,7 +35,7 @@ object WebServer extends CustomLogging {
   final case class ChangeEmail(oldEmail: EmailAddress, newEmail: EmailAddress) extends EmailAction with PersistenceAction
 
   sealed trait WebAction
-  final case class SubscribeToPackages(email: EmailAddress, pkgs: NonEmptyList[PackageName]) extends WebAction
+  final case class SubscribeToPackages(email: EmailAddress, pkgs: NonEmptyList[AnityaId]) extends WebAction
   object SubscribeToPackages {
     def fromUrlForm(urlForm: UrlForm): Either[String, SubscribeToPackages] = {
       for {
@@ -46,11 +47,12 @@ object WebServer extends CustomLogging {
           // Scala 2.13.0
           .map(xs => NonEmptyList.fromFoldable(xs))
           .flatMap(_.toRight("Received an empty list of packages to subscribe to!"))
+          .flatMap(_.traverse(x => x.toIntOption.toRight(s"Attempted to convert $x into an integer as an AnityaId but it doesn't look like a valid integer!")))
         emailAddress <- urlForm
           .values.get("emailAddress")
           .flatMap(_.headOption)
           .toRight("Email address key not found!")
-      } yield SubscribeToPackages(EmailAddress(emailAddress), packages.map(PackageName.apply))
+      } yield SubscribeToPackages(EmailAddress(emailAddress), packages.map(AnityaId.apply))
     }
   }
 
@@ -197,7 +199,7 @@ object WebServer extends CustomLogging {
   }
 
   sealed trait Error extends Exception with Product with Serializable
-  final case class NoPackagesFoundForNames(packageNames: NonEmptyList[PackageName]) extends Error
+  final case class NoPackagesFoundForAnityaIds(anityaIds: NonEmptyList[AnityaId]) extends Error
   final case class AnityaProjectJsonWasInUnexpectedFormat(json: Json, error: DecodingFailure) extends Error
   final case class ProjectNameNotFoundInAnitya(projectName: String) extends Error
 
@@ -206,35 +208,35 @@ object WebServer extends CustomLogging {
       case subscribeToPackages: SubscribeToPackages =>
         Persistence.retrievePackages(subscribeToPackages.pkgs)
           .map{
-            nameToFullPackages =>
-              val nameToFullPackagesOpt = subscribeToPackages
+            anityaIdToFullPackage =>
+              val anityaIdToFullPackageOpt = subscribeToPackages
                 .pkgs
-                .map(name => name -> nameToFullPackages.get(name))
-              val firstElem = nameToFullPackagesOpt.head match {
+                .map(anityaId => anityaId -> anityaIdToFullPackage.get(anityaId))
+              val firstElem = anityaIdToFullPackageOpt.head match {
                 case (_, Some(fullPackage)) =>
                   Ior.Right(SubscribeToPackagesFullName(subscribeToPackages.email, NonEmptyList.of(fullPackage)))
-                case (packageName, None) =>
-                  Ior.Left(NoPackagesFoundForNames(NonEmptyList.of(packageName)))
+                case (anityaId, None) =>
+                  Ior.Left(NoPackagesFoundForAnityaIds(NonEmptyList.of(anityaId)))
               }
-              nameToFullPackagesOpt.foldLeft(firstElem){
-                case (Ior.Both(noPackagesFoundForNames, subscribeToPackagesFullName), (_, Some(fullPackage))) =>
-                  Ior.Both(noPackagesFoundForNames, subscribeToPackagesFullName.copy(pkgs = fullPackage :: subscribeToPackagesFullName.pkgs))
-                case (Ior.Both(noPackagesFoundForNames, subscribeToPackagesFullName), (packageName, None)) =>
-                  Ior.Both(noPackagesFoundForNames.copy(packageNames = packageName :: noPackagesFoundForNames.packageNames), subscribeToPackagesFullName)
+              anityaIdToFullPackageOpt.foldLeft(firstElem){
+                case (Ior.Both(noPackagesFound, subscribeToPackagesFullName), (_, Some(fullPackage))) =>
+                  Ior.Both(noPackagesFound, subscribeToPackagesFullName.copy(pkgs = fullPackage :: subscribeToPackagesFullName.pkgs))
+                case (Ior.Both(noPackagesFound, subscribeToPackagesFullName), (anityaId, None)) =>
+                  Ior.Both(noPackagesFound.copy(anityaIds = anityaId :: noPackagesFound.anityaIds), subscribeToPackagesFullName)
                 case (Ior.Right(subscribeToPackagesFullName), (_, Some(fullPackage))) =>
                   Ior.Right(subscribeToPackagesFullName.copy(pkgs = fullPackage :: subscribeToPackagesFullName.pkgs))
-                case (Ior.Right(subscribeToPackagesFullName), (packageName, None)) =>
-                  Ior.Both(NoPackagesFoundForNames(NonEmptyList.of(packageName)), subscribeToPackagesFullName)
-                case (Ior.Left(noPackagesFoundForNames), (_, Some(fullPackage))) =>
-                  Ior.Both(noPackagesFoundForNames, SubscribeToPackagesFullName(subscribeToPackages.email, NonEmptyList.of(fullPackage)))
-                case (Ior.Left(noPackagesFoundForNames), (packageName, None)) =>
-                  Ior.Left(noPackagesFoundForNames.copy(packageNames = packageName :: noPackagesFoundForNames.packageNames))
+                case (Ior.Right(subscribeToPackagesFullName), (anityaId, None)) =>
+                  Ior.Both(NoPackagesFoundForAnityaIds(NonEmptyList.of(anityaId)), subscribeToPackagesFullName)
+                case (Ior.Left(noPackagesFound), (_, Some(fullPackage))) =>
+                  Ior.Both(noPackagesFound, SubscribeToPackagesFullName(subscribeToPackages.email, NonEmptyList.of(fullPackage)))
+                case (Ior.Left(noPackagesFound), (anityaId, None)) =>
+                  Ior.Left(noPackagesFound.copy(anityaIds = anityaId :: noPackagesFound.anityaIds))
               }
           }
     }
 
   def processInboundWebhook[F[_] : Effect](request: Request[F]): F[EmailAction] = {
-    logger.info(s"Request: $request")
+    logger.info(s"Processing incoming email: $request")
     request.as[String].flatMap{
       body => Effect[F].delay(s"Body: $body")
     }
@@ -266,34 +268,31 @@ object WebServer extends CustomLogging {
               .>>{
                 webActionToPersistenceAction(incomingSubscription)
                   .transact(Persistence.transactor)
-                  .flatMap{ errorIorPersistenceAction => errorIorPersistenceAction.traverse(Persistence.processAction) }
                   .flatMap{
-                    case Ior.Both(err @ NoPackagesFoundForNames(packageNames), _) =>
-                      val successfullyPersistedPackages =
-                        incomingSubscription
-                          .pkgs
-                          .toList
-                          .toSet
-                          .--(packageNames.toList.toSet)
-                          .toList
-                          .|>(xs => NonEmptyList.fromFoldable(xs))
-                      successfullyPersistedPackages
-                        .fold(().pure[IO]){
+                    errIorAction => errIorAction.traverse(Persistence.processAction).as(errIorAction)
+                  }
+                  .flatMap{
+                    case Ior.Both(err @ NoPackagesFoundForAnityaIds(anityaIds), action) =>
+                      action match {
+                        case SubscribeToPackagesFullName(_, pkgs) =>
+                          val emailAction = emailSuccessfullySubscribedPackages(
+                            emailSender,
+                            incomingSubscription.email,
+                            pkgs
+                          )
+                          emailAction.>>(Ok(s"Successfully submitted form! (with some errors: $err)"))
+                      }
+                    case Ior.Left(err) =>
+                      BadRequest(s"You failed! $err")
+                    case Ior.Right(action) =>
+                      action match {
+                        case SubscribeToPackagesFullName(_, pkgs) =>
                           emailSuccessfullySubscribedPackages(
                             emailSender,
                             incomingSubscription.email,
-                            _
-                          )
-                        }
-                        .>>(Ok(s"Successfully submitted form! (with some errors: $err)"))
-                    case Ior.Left(err) =>
-                      BadRequest(s"You failed! $err")
-                    case Ior.Right(_) =>
-                      emailSuccessfullySubscribedPackages(
-                        emailSender,
-                        incomingSubscription.email,
-                        incomingSubscription.pkgs
-                      ) >> Ok("Successfully submitted form!")
+                            pkgs
+                          ) >> Ok("Successfully submitted form!")
+                      }
                   }
               }
         }
@@ -301,24 +300,29 @@ object WebServer extends CustomLogging {
     case request @ GET -> Root / "incomingEmail" =>
       Ok(s"Yep this email hook is responding to GET requests!")
     case request @ POST -> Root / "incomingEmail" =>
-      Ok(s"This is the request we're getting for the POST: $request")
-//      for {
-//        action <- processInboundWebhook(request)
-//        persistenceAction = emailActionToPersistenceAction(action)
-//        _ <- Persistence.processAction(persistenceAction)
-//        response <- Ok("Processed inbound email!")
-//      } yield response
+      for {
+        action <- processInboundWebhook(request)
+        persistenceAction = emailActionToPersistenceAction(action)
+        _ <- Persistence.processAction(persistenceAction)
+        response <- Ok(s"Processed inbound email with hook: $request!")
+      } yield response
   }
 
   private def emailSuccessfullySubscribedPackages(
     emailSender: Email,
     emailAddress: EmailAddress,
-    packages: NonEmptyList[PackageName]
+    packages: NonEmptyList[FullPackage]
   ): IO[Unit] = {
+    val content =
+      s"""
+         |You will get an email any time one of the following packages gets a new version:
+         |
+         |${packages.map{p => s"${p.name} (homepage: ${p.homepage}, Anitya ID: ${p.anityaId})"}.mkString("\n\n")}
+       """.stripMargin
     emailSender.email(
       to = emailAddress,
-      subject = s"Signed for notifications about ${packages.map(_.str).mkString(",")}",
-      content = s"You will get an email anytime one of the following packages gets a new version: ${packages.map(_.str).mkString(",")}"
+      subject = s"Signed for notifications about ${packages.map(_.name).mkString(",")}",
+      content = content
     )
   }
 

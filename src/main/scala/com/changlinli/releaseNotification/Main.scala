@@ -2,13 +2,11 @@ package com.changlinli.releaseNotification
 
 import java.io.FileInputStream
 import java.security.{KeyStore, SecureRandom}
-import java.util.concurrent.{Executors, TimeUnit}
+import java.util.concurrent.TimeUnit
 
-import cats.Monad
 import cats.data.{Kleisli, NonEmptyList}
-import cats.effect.{Blocker, ConcurrentEffect, Effect, ExitCode, IO, IOApp, Timer}
+import cats.effect.{ConcurrentEffect, Effect, ExitCode, IO, Timer}
 import cats.implicits._
-import com.changlinli.releaseNotification.WebServer.{AnityaProjectJsonWasInUnexpectedFormat, RawAnityaProjectResultPage}
 import com.rabbitmq.client.DefaultSaslConfig
 import dev.profunktor.fs2rabbit.config.declaration.{DeclarationQueueConfig, Durable, NonAutoDelete, NonExclusive}
 import dev.profunktor.fs2rabbit.config.{Fs2RabbitConfig, Fs2RabbitNodeConfig}
@@ -24,15 +22,10 @@ import io.circe.{Decoder, DecodingFailure, HCursor, Json}
 import javax.net.ssl.{KeyManagerFactory, SSLContext, TrustManagerFactory}
 import org.http4s._
 import org.http4s.client.{Client, JavaNetClientBuilder}
-import org.http4s.client.blaze.BlazeClientBuilder
-import org.http4s.dsl.io._
 import org.http4s.implicits._
-import org.http4s.server.blaze.BlazeServerBuilder
 import scopt.OptionParser
 
-import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.FiniteDuration
-import scala.io.Source
 import scala.language.higherKinds
 
 object Main extends MyIOApp with Logging {

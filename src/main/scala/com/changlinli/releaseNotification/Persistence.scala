@@ -7,6 +7,7 @@ import cats.data.NonEmptyList
 import cats.effect.{Blocker, ContextShift, IO, Resource}
 import cats.implicits._
 import com.changlinli.releaseNotification.WebServer.{Action, ChangeEmail, EmailAddress, FullPackage, PackageName, PersistenceAction, RawAnityaProject, SubscribeToPackages, SubscribeToPackagesFullName, UnsubscribeEmailFromAllPackages, UnsubscribeEmailFromPackage}
+import com.changlinli.releaseNotification.ids.AnityaId
 import doobie._
 import doobie.implicits._
 import doobie.Transactor
@@ -107,9 +108,9 @@ object Persistence extends CustomLogging {
     } yield result
   }
 
-  def retrievePackages(packageNames: NonEmptyList[PackageName])(implicit contextShift: ContextShift[IO]): ConnectionIO[Map[PackageName, FullPackage]] = {
+  def retrievePackages(anityaIds: NonEmptyList[AnityaId])(implicit contextShift: ContextShift[IO]): ConnectionIO[Map[AnityaId, FullPackage]] = {
     val query = fr"""SELECT id, name, homepage, anityaId FROM packages WHERE """ ++
-      Fragments.in(fr"name", packageNames.map(_.str))
+      Fragments.in(fr"anityaId", anityaIds.map(_.toInt))
     query
       .queryWithLogHandler[(Int, String, String, Int)](doobieLogHandler)
       .to[List]
@@ -118,7 +119,7 @@ object Persistence extends CustomLogging {
           elems
             .map{
               case (id, name, homepage, anityaId) =>
-                PackageName(name) -> FullPackage(name = PackageName(name), homepage = homepage, anityaId = anityaId, packageId = id)
+                AnityaId(anityaId) -> FullPackage(name = PackageName(name), homepage = homepage, anityaId = anityaId, packageId = id)
             }
             .toMap
       }
