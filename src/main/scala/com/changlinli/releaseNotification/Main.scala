@@ -33,12 +33,17 @@ object Main extends MyIOApp with Logging {
   case object CreateFromScratch extends DatabaseCreationOption
   case object PreexistingDatabase extends DatabaseCreationOption
 
+  sealed trait PackageDatabaseOption
+  case object RecreatePackageDatabaseFromBulkDownload extends PackageDatabaseOption
+  case object DoNotBulkDownloadPackageDatabase extends PackageDatabaseOption
+
   final case class ServiceConfiguration(
     databaseFile: String = "sample.db",
     portNumber: Int = 8080,
     databaseCreationOpt: DatabaseCreationOption = PreexistingDatabase,
     ipAddress: String = "127.0.0.1",
-    anityaUrl: Uri = uri"https://release-monitoring.org"
+    anityaUrl: Uri = uri"https://release-monitoring.org",
+    rebuildPackageDatabase: PackageDatabaseOption = DoNotBulkDownloadPackageDatabase
   )
 
   val cmdLineOptionParser: OptionParser[ServiceConfiguration] = new scopt.OptionParser[ServiceConfiguration]("notify-new-package") {
@@ -293,12 +298,26 @@ object Main extends MyIOApp with Logging {
           case CreateFromScratch => Persistence.initializeDatabase.transact(doobieTransactor)
         }
         rabbitFiber <- runRabbitListener.start
-        anityaFiber <- processAnityaInBackground.start
+        anityaFiber <- cmdLineOpts.rebuildPackageDatabase match {
+          case RecreatePackageDatabaseFromBulkDownload => processAnityaInBackground.start
+          case DoNotBulkDownloadPackageDatabase => IO.unit.start
+        }
         webServerFiber <- WebServer.runWebServer(emailSender, cmdLineOpts.portNumber, cmdLineOpts.ipAddress, blocker, doobieTransactor).start
+        stream = fs2.io.stdin[IO](1, blocker).evalMap{
+          b =>
+            if (b == 's'.toByte) {
+              IO(System.exit(0))
+            } else {
+              IO.unit
+            }
+        }
+        keyPressDetectorFiber <- stream.compile.drain.start
         _ <- rabbitFiber.join
         _ <- anityaFiber.join
         _ <- webServerFiber.join
+        _ <- keyPressDetectorFiber.join
       } yield ()
     }
   } yield ExitCode.Success
+
 }

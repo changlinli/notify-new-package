@@ -5,11 +5,13 @@ import java.util.concurrent.TimeUnit
 import cats.data.{EitherT, Ior, NonEmptyList}
 import cats.effect.{Blocker, ContextShift, Effect, IO, Timer}
 import cats.implicits._
+import com.changlinli.releaseNotification.data.{FullPackage, PackageName}
 import com.changlinli.releaseNotification.ids.AnityaId
 import doobie.free.connection.ConnectionIO
 import doobie.implicits._
 import doobie.util.transactor.Transactor
 import io.circe._
+import io.circe.syntax._
 import org.http4s._
 import org.http4s.circe._
 import org.http4s.client.Client
@@ -24,8 +26,6 @@ import scala.language.higherKinds
 object WebServer extends CustomLogging {
 
   final case class EmailAddress(str: String)
-
-  final case class PackageName(str: String)
 
   sealed trait Action
   sealed trait EmailAction extends Action
@@ -58,8 +58,6 @@ object WebServer extends CustomLogging {
   sealed trait PersistenceAction
 
   final case class SubscribeToPackagesFullName(email: EmailAddress, pkgs: NonEmptyList[FullPackage]) extends PersistenceAction
-
-  final case class FullPackage(name: PackageName, homepage: String, anityaId: Int, packageId: Int)
 
   def emailActionToPersistenceAction(emailAction: EmailAction): PersistenceAction = emailAction match {
     case unsubscribe: UnsubscribeEmailFromPackage => unsubscribe
@@ -234,10 +232,6 @@ object WebServer extends CustomLogging {
           }
     }
 
-  private def searchForPackage[F[_] : Effect](packageNameFragment: String): F[List[FullPackage]] = {
-    ???
-  }
-
   def processInboundWebhook[F[_] : Effect](request: Request[F]): F[EmailAction] = {
     logger.info(s"Processing incoming email: $request")
     request.as[String].flatMap{
@@ -314,7 +308,7 @@ object WebServer extends CustomLogging {
       Persistence
         .searchForPackagesByNameFragment(nameFragment)
         .transact(transactor)
-        .flatMap(packages => Ok(packages.toString))
+        .flatMap(packages => Ok(packages.asJson))
   }
 
   object SearchQueryMatcher extends QueryParamDecoderMatcher[String]("name")

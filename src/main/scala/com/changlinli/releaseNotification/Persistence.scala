@@ -1,18 +1,13 @@
 package com.changlinli.releaseNotification
 
-import java.io.File
-import java.util.concurrent.Executors
-
 import cats.data.NonEmptyList
 import cats.effect.{Blocker, ContextShift, IO, Resource}
 import cats.implicits._
-import com.changlinli.releaseNotification.WebServer.{Action, ChangeEmail, EmailAddress, FullPackage, PackageName, PersistenceAction, RawAnityaProject, SubscribeToPackages, SubscribeToPackagesFullName, UnsubscribeEmailFromAllPackages, UnsubscribeEmailFromPackage}
+import com.changlinli.releaseNotification.WebServer._
+import com.changlinli.releaseNotification.data.{FullPackage, PackageName}
 import com.changlinli.releaseNotification.ids.AnityaId
-import doobie._
+import doobie.{Transactor, _}
 import doobie.implicits._
-import doobie.Transactor
-import doobie.util.transactor.Transactor.Aux
-import grizzled.slf4j.Logging
 import org.sqlite.SQLiteConfig.JournalMode
 import org.sqlite.javax.SQLiteConnectionPoolDataSource
 
@@ -81,7 +76,7 @@ object Persistence extends CustomLogging {
   }
 
   def searchForPackagesByNameFragmentQuery(nameFragment: String): doobie.Query0[(Int, String, String, Int)] = {
-    sql"""SELECT id, name, homepage, anityaId FROM `packages` WHERE name LIKE ${s"%$nameFragment%"}"""
+    sql"""SELECT id, name, homepage, anityaId FROM `packages` WHERE name LIKE ${s"%$nameFragment%"} LIMIT 10"""
       .queryWithLogHandler[(Int, String, String, Int)](doobieLogHandler)
   }
 
