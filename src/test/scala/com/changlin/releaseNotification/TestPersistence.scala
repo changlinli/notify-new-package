@@ -60,6 +60,14 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
     } yield result
     action.transact(transactor).unsafeRunSync() should be (List(EmailAddress("hello@hello.com")))
   }
+  it should "succeed in retrieving a package from the suffix of its name" in {
+    val action = for {
+      _ <- Persistence.initializeDatabase
+      _ <- Persistence.upsertPackage("hello", "hello.com", 1)
+      result <- Persistence.searchForPackagesByNameFragment("ello")
+    } yield result
+    action.transact(transactor).unsafeRunSync() should be (List(FullPackage(name = PackageName("hello"), homepage = "hello.com", packageId = 1, anityaId = 1)))
+  }
 
   override def transactor: doobie.Transactor[IO] = Persistence.createTransactorRaw(":memory:", connectionExecutionContext, blocker)
 }
