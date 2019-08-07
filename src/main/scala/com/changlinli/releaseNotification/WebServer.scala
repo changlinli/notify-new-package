@@ -8,6 +8,7 @@ import cats.implicits._
 import com.changlinli.releaseNotification.ids.AnityaId
 import doobie.free.connection.ConnectionIO
 import doobie.implicits._
+import doobie.util.transactor.Transactor
 import io.circe._
 import org.http4s._
 import org.http4s.circe._
@@ -233,6 +234,10 @@ object WebServer extends CustomLogging {
           }
     }
 
+  private def searchForPackage[F[_] : Effect](packageNameFragment: String): F[List[FullPackage]] = {
+    ???
+  }
+
   def processInboundWebhook[F[_] : Effect](request: Request[F]): F[EmailAction] = {
     logger.info(s"Processing incoming email: $request")
     request.as[String].flatMap{
@@ -245,7 +250,8 @@ object WebServer extends CustomLogging {
   // If you see a warning here about unreachable code see https://github.com/scala/bug/issues/11457
   def webService(
     emailSender: Email,
-    blocker: Blocker
+    blocker: Blocker,
+    transactor: Transactor[IO]
   )(implicit contextShift: ContextShift[IO]
   ): HttpRoutes[IO] = HttpRoutes.of[IO]{
     case request @ GET -> Root =>
@@ -265,9 +271,9 @@ object WebServer extends CustomLogging {
             infoIO(s"Persisting the following subscription: $incomingSubscription")
               .>>{
                 webActionToPersistenceAction(incomingSubscription)
-                  .transact(Persistence.transactor)
+                  .transact(transactor)
                   .flatMap{
-                    errIorAction => errIorAction.traverse(Persistence.processAction).as(errIorAction)
+                    errIorAction => errIorAction.traverse(Persistence.processAction(_, transactor)).as(errIorAction)
                   }
                   .flatMap{
                     case Ior.Both(err @ NoPackagesFoundForAnityaIds(anityaIds), action) =>
@@ -301,10 +307,17 @@ object WebServer extends CustomLogging {
       for {
         action <- processInboundWebhook(request)
         persistenceAction = emailActionToPersistenceAction(action)
-        _ <- Persistence.processAction(persistenceAction)
+        _ <- Persistence.processAction(persistenceAction, transactor)
         response <- Ok(s"Processed inbound email with hook: $request!")
       } yield response
+    case GET -> Root / "search" :? SearchQueryMatcher(nameFragment) =>
+      Persistence
+        .searchForPackagesByNameFragment(nameFragment)
+        .transact(transactor)
+        .flatMap(packages => Ok(packages.toString))
   }
+
+  object SearchQueryMatcher extends QueryParamDecoderMatcher[String]("name")
 
   private def emailSuccessfullySubscribedPackages(
     emailSender: Email,
@@ -336,13 +349,14 @@ object WebServer extends CustomLogging {
     emailSender: Email,
     port: Int,
     ipAddress: String,
-    blocker: Blocker
+    blocker: Blocker,
+    transactor: Transactor[IO]
   )(implicit timer: Timer[IO],
     contextShift: ContextShift[IO]
   ): IO[Unit] =
     BlazeServerBuilder[IO]
       .bindHttp(port, ipAddress)
-      .withHttpApp(webService(emailSender, blocker).orNotFound)
+      .withHttpApp(webService(emailSender, blocker, transactor).orNotFound)
       .serve
       .compile
       .drain

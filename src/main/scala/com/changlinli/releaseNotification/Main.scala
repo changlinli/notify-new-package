@@ -245,7 +245,7 @@ object Main extends MyIOApp with Logging {
       fs2RabbitChannel <- fs2Rabbit.createConnectionChannel
       doobieTransactor <- Persistence.createTransactor(cmdLineOpts.databaseFile)
     } yield (blazeClient, fs2RabbitChannel, doobieTransactor)
-    listenerFiber <- allResources.use { case (blazeClient, fs2RabbitChannel, doobieTransactor) =>
+    _ <- allResources.use { case (blazeClient, fs2RabbitChannel, doobieTransactor) =>
       implicit val channel: model.AMQPChannel = fs2RabbitChannel
       val runRabbitListener = for {
         _ <- fs2Rabbit.declareQueue(
@@ -294,12 +294,11 @@ object Main extends MyIOApp with Logging {
         }
         rabbitFiber <- runRabbitListener.start
         anityaFiber <- processAnityaInBackground.start
+        webServerFiber <- WebServer.runWebServer(emailSender, cmdLineOpts.portNumber, cmdLineOpts.ipAddress, blocker, doobieTransactor).start
         _ <- rabbitFiber.join
         _ <- anityaFiber.join
+        _ <- webServerFiber.join
       } yield ()
-    }.start
-    webServerFiber <- WebServer.runWebServer(emailSender, cmdLineOpts.portNumber, cmdLineOpts.ipAddress, blocker).start
-    _ <- listenerFiber.join
-    _ <- webServerFiber.join
+    }
   } yield ExitCode.Success
 }

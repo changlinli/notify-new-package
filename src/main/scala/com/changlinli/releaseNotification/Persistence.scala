@@ -67,7 +67,7 @@ object Persistence extends CustomLogging {
 //  final case class UnsubscribeEmailFromAllPackages(email: EmailAddress) extends EmailAction
 //  final case class ChangeEmail(oldEmail: EmailAddress, newEmail: EmailAddress) extends EmailAction
 //  final case class SubscribeToPackages(email: Email, pkgs: NonEmptyList[Package]) extends WebAction
-  def processAction(action: PersistenceAction)(implicit contextShift: ContextShift[IO]): IO[Unit] = {
+  def processAction(action: PersistenceAction, transactor: Transactor[IO])(implicit contextShift: ContextShift[IO]): IO[Unit] = {
     action match {
       case UnsubscribeEmailFromAllPackages(email) =>
         unsubscribe(email).transact(transactor).void
@@ -78,6 +78,11 @@ object Persistence extends CustomLogging {
       case SubscribeToPackagesFullName(email, pkgs) =>
         subscribeToPackagesFullName(email, pkgs).transact(transactor).void
     }
+  }
+
+  def searchForPackagesByNameFragmentQuery(nameFragment: String): doobie.Query0[(Int, String, String, Int)] = {
+    sql"""SELECT id, name, homepage, anityaId FROM `packages` WHERE name LIKE ${s"%$nameFragment%"}"""
+      .queryWithLogHandler[(Int, String, String, Int)](doobieLogHandler)
   }
 
   def retrievePackageByAnityaIdQuery(anityaId: Int): doobie.Query0[(Int, String, String, Int)] = {
@@ -93,6 +98,15 @@ object Persistence extends CustomLogging {
   def updatePackageQuery(id: Int, packageName: String, homepage: String, anityaId: Int): doobie.Update0 = {
     sql"""UPDATE `packages` set name=$packageName, homepage=$homepage, anityaId=$anityaId WHERE id=$id"""
       .updateWithLogHandler(doobieLogHandler)
+  }
+
+  def searchForPackagesByNameFragment(nameFragment: String): ConnectionIO[List[FullPackage]] = {
+    searchForPackagesByNameFragmentQuery(nameFragment)
+      .to[List]
+      .map(_.map{
+        case (id, name, homepage, anityaId) =>
+          FullPackage(name = PackageName(name), homepage = homepage, anityaId = anityaId, packageId = id)
+      })
   }
 
   def upsertPackage(packageName: String, homepage: String, anityaId: Int): ConnectionIO[Int] = {
@@ -174,10 +188,10 @@ object Persistence extends CustomLogging {
       connectionEC <- ExecutionContexts.fixedThreadPool[IO](32)
       transactionEC <- ExecutionContexts.cachedThreadPool[IO]
       blocker = Blocker.liftExecutionContext(transactionEC)
-    } yield transactorA(fileName, connectionEC, blocker)
+    } yield createTransactorRaw(fileName, connectionEC, blocker)
   }
 
-  def transactorA(fileName: String, connectionEC: ExecutionContext, blocker: Blocker)(implicit contextShift: ContextShift[IO]): Transactor[IO] = {
+  def createTransactorRaw(fileName: String, connectionEC: ExecutionContext, blocker: Blocker)(implicit contextShift: ContextShift[IO]): Transactor[IO] = {
     val config = new org.sqlite.SQLiteConfig()
     config.enforceForeignKeys(true)
     config.setJournalMode(JournalMode.WAL)
@@ -187,14 +201,6 @@ object Persistence extends CustomLogging {
 
     Transactor.fromDataSource[IO](dataSource, connectionEC, blocker)
   }
-
-  def transactor(implicit contextShift: ContextShift[IO]): Aux[IO, Unit] =
-    Transactor.fromDriverManager[IO](
-      driver = "org.sqlite.JDBC",
-      url = "jdbc:sqlite:sample.db",
-      user = "",
-      pass = ""
-    )
 
   val retrieveAllEmailsSubscribedToAllA: ConnectionIO[List[EmailAddress]] =
     sql"""SELECT emailAddress FROM subscriptions INNER JOIN emails ON emails.id = subscriptions.emailId WHERE specialType='ALL'"""

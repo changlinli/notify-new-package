@@ -61,5 +61,5 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
     action.transact(transactor).unsafeRunSync() should be (List(EmailAddress("hello@hello.com")))
   }
 
-  override def transactor: doobie.Transactor[IO] = Persistence.transactorA(":memory:", connectionExecutionContext, blocker)
+  override def transactor: doobie.Transactor[IO] = Persistence.createTransactorRaw(":memory:", connectionExecutionContext, blocker)
 }
