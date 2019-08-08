@@ -4,10 +4,12 @@
   <meta charset="utf-8">
 </head>
 <body>
+<div>
+  <label for="packageName">Package Name:</label>
+  <input type="text" id="packageName" name="packages" placeholder="rust">
+</div>
 <form action="/submitEmailAddress" method="post">
-  <div>
-    <label for="packageName">Package Name:</label>
-    <input type="text" id="packageName" name="packages" placeholder="rust">
+  <div id="packagesForSubscriptionFormElems">
   </div>
   <div id="searchResults">
   </div>
@@ -16,31 +18,123 @@
     <input type="email" id="emailAddress" name="emailAddress" placeholder="user@example.com">
   </div>
   <div>
-    <button type="submit">Subscribe to package version updates!</button>
+    <button type="submit">Submit your subscription preferences!</button>
   </div>
 </form>
+<ul id="packagesToSubscribeToDiv">
+</ul>
+<ul id="packagesToUnsubscribeFromDiv">
+</ul>
 </body>
 <script>
     const input = document.getElementById('packageName');
 
+    const formPackageSubscriptionElements = document.getElementById('packagesForSubscriptionFormElems');
+
+    const packagesToSubscribeToHtmlElement = document.getElementById('packagesToSubscribeToDiv');
+
+    const packagesToSubscribeTo = new Map();
+
+    const packagesToUnsubscribeFrom = new Map();
+
     function createListElementFromSearchResult(resultElem) {
-      var descriptionList = document.createElement('ul');
-      var nameElement = document.createElement('li');
+      const descriptionList = document.createElement('ul');
+      const nameElement = document.createElement('li');
       nameElement.textContent = 'Name: ' + resultElem.name;
-      var homepageElement = document.createElement('li');
-      homepageElement.textContent = 'Homepage: ' + resultElem.homepage;
-      var anityaIdElement = document.createElement('li');
-      anityaIdElement.textContent = resultElem.anityaId;
+      const homepageElement = document.createElement('li');
+      const homepageLink = document.createElement('a');
+      homepageLink.textContent = resultElem.homepage;
+      homepageLink.href = resultElem.homepage;
+      homepageElement.textContent = 'Homepage: ';
+      homepageElement.appendChild(homepageLink);
+      const anityaIdElement = document.createElement('li');
+      anityaIdElement.textContent = 'Anitya ID: ' + resultElem.anityaId;
       descriptionList.appendChild(nameElement);
       descriptionList.appendChild(homepageElement);
       descriptionList.appendChild(anityaIdElement);
       return descriptionList;
     }
 
+    function createSubscriptionFormElement(anityaId) {
+      const inputElement = document.createElement('input');
+      inputElement.readOnly = true;
+      inputElement.type = 'text';
+      inputElement.name = 'packages';
+      inputElement.value = anityaId;
+      return inputElement;
+    }
+
+    function removeAllChildren(htmlElement) {
+      while(htmlElement.firstChild) {
+        htmlElement.removeChild(htmlElement.firstChild);
+      }
+    }
+
+    function createListOfSubscriptions() {
+      removeAllChildren(packagesToSubscribeToHtmlElement);
+      removeAllChildren(formPackageSubscriptionElements);
+      packagesToSubscribeTo.forEach(function(element) {
+        const listElem = createListElementFromSearchResult(element);
+        packagesToSubscribeToHtmlElement.appendChild(listElem);
+        packagesToSubscribeToHtmlElement.appendChild(createRemoveSubscriptionButton(element));
+        formPackageSubscriptionElements.appendChild(createSubscriptionFormElement(element.anityaId));
+      });
+    }
+
+    function createRemoveSubscriptionButton(element) {
+      const button = document.createElement('button');
+      button.textContent = 'Remove';
+      button.onclick = function() {removePackageFromToSubscribe(element);};
+      return button;
+    }
+
+    function createRemoveUnsubscriptionButton() {
+      const button = document.createElement('button');
+      button.textContent = 'Remove';
+      button.onclick = function() {
+        packagesToUnsubscribeFrom.delete(htmlElement.anityaId);
+        createListOfSubscriptions();
+      };
+      return button;
+    }
+
+    function removePackageFromToSubscribe(resultElem) {
+      console.log(resultElem);
+      console.log(packagesToSubscribeTo);
+      console.log(packagesToSubscribeTo.delete(resultElem.anityaId));
+      createListOfSubscriptions();
+    }
+
+    function addPackageToSubscribe(resultElem) {
+      packagesToSubscribeTo.set(resultElem.anityaId, resultElem);
+      createListOfSubscriptions();
+    }
+
+    function addPackageToUnsubscribe(resultElem) {
+      packagesToUnsubscribeFrom.set(resultElem.anityaId, resultElem);
+      createListOfSubscriptions();
+    }
+
+    function createSubscribeButton(resultElement) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = 'Subscribe to notifications about this package'
+      button.onclick = function() {addPackageToSubscribe(resultElement);};
+      return button;
+    }
+
+    function createUnsubscribeButton(resultElement) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = 'Unsubscribe from notifications about this package'
+      button.onclick = function() {addPackageToUnsubscribe(resultElement);};
+      return button;
+    }
+
     // This is not thread-safe! Which... I guess doesn't matter because JS is
     // single-threaded anyways
     function updateSearchResults(results) {
-      var searchResultsDiv = document.getElementById('searchResults');
+      const searchResultsDiv = document.getElementById('searchResults');
       if (results.length === 0) {
         searchResultsDiv.textContent = 'No results found!';
       } else {
@@ -48,13 +142,15 @@
           document.getElementById('searchResultsList').remove();
         }
         searchResultsDiv.textContent = '';
-        var newList = document.createElement('ul');
+        const newList = document.createElement('ul');
         newList.id = "searchResultsList";
         results.forEach(function(element) {
-          var listElement = document.createElement('li');
+          const listElement = document.createElement('li');
           console.log(element);
-          var listElementContents = createListElementFromSearchResult(element);
+          const listElementContents = createListElementFromSearchResult(element);
           listElement.appendChild(listElementContents);
+          listElement.appendChild(createSubscribeButton(element));
+          listElement.appendChild(createUnsubscribeButton(element));
           newList.appendChild(listElement);
         });
         searchResultsDiv.appendChild(newList);
@@ -62,7 +158,7 @@
     }
 
     function makeSearchRequest(searchString) {
-      var httpRequest = new XMLHttpRequest();
+      const httpRequest = new XMLHttpRequest();
 
       if (!httpRequest) {
         console.log("We failed to create an XMLHttpRequest!");

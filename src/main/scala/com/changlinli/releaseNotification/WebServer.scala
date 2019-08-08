@@ -215,7 +215,7 @@ object WebServer extends CustomLogging {
                 case (anityaId, None) =>
                   Ior.Left(NoPackagesFoundForAnityaIds(NonEmptyList.of(anityaId)))
               }
-              anityaIdToFullPackageOpt.foldLeft(firstElem){
+              anityaIdToFullPackageOpt.tail.foldLeft(firstElem){
                 case (Ior.Both(noPackagesFound, subscribeToPackagesFullName), (_, Some(fullPackage))) =>
                   Ior.Both(noPackagesFound, subscribeToPackagesFullName.copy(pkgs = fullPackage :: subscribeToPackagesFullName.pkgs))
                 case (Ior.Both(noPackagesFound, subscribeToPackagesFullName), (anityaId, None)) =>
@@ -322,11 +322,11 @@ object WebServer extends CustomLogging {
       s"""
          |You will get an email any time one of the following packages gets a new version:
          |
-         |${packages.map{p => s"${p.name} (homepage: ${p.homepage}, Anitya ID: ${p.anityaId})"}.mkString("\n\n")}
+         |${packages.map{p => s"${p.name.str} (homepage: ${p.homepage}, Anitya ID: ${p.anityaId})"}.mkString("\n\n")}
        """.stripMargin
     emailSender.email(
       to = emailAddress,
-      subject = s"Signed for notifications about ${packages.map(_.name).mkString(",")}",
+      subject = s"Signed up for notifications about ${packages.map(_.name.str).mkString(",")}",
       content = content
     )
   }
