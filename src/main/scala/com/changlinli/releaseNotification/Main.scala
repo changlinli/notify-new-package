@@ -29,62 +29,6 @@ import scala.concurrent.duration.FiniteDuration
 import scala.language.higherKinds
 
 object Main extends MyIOApp with Logging {
-  sealed trait DatabaseCreationOption
-  case object CreateFromScratch extends DatabaseCreationOption
-  case object PreexistingDatabase extends DatabaseCreationOption
-
-  sealed trait PackageDatabaseOption
-  case object RecreatePackageDatabaseFromBulkDownload extends PackageDatabaseOption
-  case object DoNotBulkDownloadPackageDatabase extends PackageDatabaseOption
-
-  final case class ServiceConfiguration(
-    databaseFile: String = "sample.db",
-    portNumber: Int = 8080,
-    databaseCreationOpt: DatabaseCreationOption = PreexistingDatabase,
-    ipAddress: String = "127.0.0.1",
-    anityaUrl: Uri = uri"https://release-monitoring.org",
-    rebuildPackageDatabase: PackageDatabaseOption = DoNotBulkDownloadPackageDatabase
-  )
-
-  val cmdLineOptionParser: OptionParser[ServiceConfiguration] = new scopt.OptionParser[ServiceConfiguration]("notify-new-package") {
-    head("notify-new-package", "0.0.1")
-
-    opt[String]('f', "filename").action{
-      (filenameStr, config) => config.copy(databaseFile = filenameStr)
-    }
-
-    opt[Int]('p', "port").action{
-      (port, config) => config.copy(portNumber = port)
-    }
-
-    opt[Unit]('i', "initialize-database").action{
-      (_, config) => config.copy(databaseCreationOpt = CreateFromScratch)
-    }
-
-    opt[String]('a', "bind-address").action{
-      (address, config) => config.copy(ipAddress = address)
-    }
-
-    opt[String]('u', name="anitya-website-url")
-      .validate{
-        url => Uri.fromString(url) match {
-          case Left(err) =>
-            failure(s"The argument passed as a URL ($url) does not seem to be a valid URL due to the following reason: ${err.message}")
-          case Right(_) =>
-            success
-        }
-      }
-      .action{
-        (url, config) =>
-          // We can use unsafeFromString because we already checked fromString
-          // previously. Yes Scopt is annoying.
-          config.copy(anityaUrl = Uri.unsafeFromString(url))
-      }
-
-    help("help")
-
-    version("version")
-  }
 
   val rabbitMQConfig = Fs2RabbitConfig(
     nodes = NonEmptyList.of(Fs2RabbitNodeConfig(host = "rabbitmq.fedoraproject.org", 5671)),
@@ -239,12 +183,9 @@ object Main extends MyIOApp with Logging {
     _ <- IO(System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "DEBUG"))
     _ <- IO(System.setProperty(org.slf4j.impl.SimpleLogger.SHOW_DATE_TIME_KEY, "true"))
     _ <- IO(System.setProperty(org.slf4j.impl.SimpleLogger.DATE_TIME_FORMAT_KEY, "yyyy-MM-dd'T'HH:mm:ss.SSSZ"))
-    cmdLineOpts <- cmdLineOptionParser.parse(args, ServiceConfiguration()) match {
-      case Some(configuration) => configuration.pure[IO]
-      case None => Effect[IO].raiseError[ServiceConfiguration](new Exception("Bad command line options"))
-    }
+    cmdLineOpts <- ServiceConfiguration.parseCommandLineOptions(args)
     _ <- IO(logger.info(s"These are the commandline options we parsed: $cmdLineOpts"))
-    emailSender <- Email.initialize
+    emailSender <- Email.initialize(cmdLineOpts.bindAddress)
     fs2Rabbit <- generateFs2Rabbit
     allResources = for {
       blazeClient <- JavaNetClientBuilder[IO](blocker).resource
@@ -303,7 +244,7 @@ object Main extends MyIOApp with Logging {
           case RecreatePackageDatabaseFromBulkDownload => processAnityaInBackground.start
           case DoNotBulkDownloadPackageDatabase => IO.unit.start
         }
-        webServerFiber <- WebServer.runWebServer(emailSender, cmdLineOpts.portNumber, cmdLineOpts.ipAddress, blocker, doobieTransactor).start
+        webServerFiber <- WebServer.runWebServer(emailSender, cmdLineOpts.portNumber, cmdLineOpts.bindAddress, blocker, doobieTransactor).start
         stream = fs2.io.stdin[IO](1, blocker).evalMap{
           b =>
             if (b == 's'.toByte) {

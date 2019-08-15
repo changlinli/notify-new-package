@@ -7,23 +7,29 @@ import com.sendgrid.helpers.mail.Mail
 import com.sendgrid.helpers.mail.objects.Content
 import com.sendgrid.helpers.mail.objects.{Email => SGEMail}
 
-class Email(sendGrid: SendGrid) {
+class Email(sendGrid: SendGrid, hostAddress: String) extends CustomLogging {
+  private val fullFromAddress = s"notification@$hostAddress"
   def email(to: EmailAddress, subject: String, content: String): IO[Unit] = IO {
     val sendGridContent = new Content("text/plain", content)
-    val mail = new Mail(new SGEMail(Email.fromAddress), subject, new SGEMail(to.str), sendGridContent)
+    val mail = new Mail(new SGEMail(fullFromAddress), subject, new SGEMail(to.str), sendGridContent)
     val request = new Request()
     request.setMethod(Method.POST)
     request.setEndpoint("mail/send")
     request.setBody(mail.build())
     val response = sendGrid.api(request)
-    println(response.getStatusCode)
-    println(response.getBody)
-    println(response.getHeaders)
+    logger.info(
+      s"""
+         |Response from sending email to ${to.str}:\n
+         |Response Status Code: ${response.getStatusCode}\n
+         |Response Body: ${response.getBody}\n
+         |Response Headers: ${response.getHeaders}\n
+       """.stripMargin
+    )
   }
 }
 
 object Email {
-  val fromAddress: String = "auto@example.com"
   val sendGridApiKey = "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"
-  def initialize: IO[Email] = IO(new SendGrid(sendGridApiKey)).map(new Email(_))
+  def initialize(hostAddress: String): IO[Email] =
+    IO(new SendGrid(sendGridApiKey)).map(new Email(_, hostAddress))
 }

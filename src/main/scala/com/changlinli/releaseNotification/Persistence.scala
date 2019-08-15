@@ -1,10 +1,13 @@
 package com.changlinli.releaseNotification
 
+import java.nio.charset.Charset
+import java.security.SecureRandom
+
 import cats.data.NonEmptyList
 import cats.effect.{Blocker, ContextShift, IO, Resource}
 import cats.implicits._
 import com.changlinli.releaseNotification.WebServer._
-import com.changlinli.releaseNotification.data.{FullPackage, PackageName}
+import com.changlinli.releaseNotification.data.{FullPackage, PackageName, UnsubscribeCode}
 import com.changlinli.releaseNotification.ids.AnityaId
 import doobie.{Transactor, _}
 import doobie.implicits._
@@ -42,8 +45,6 @@ object Persistence extends CustomLogging {
          |CREATE INDEX IF NOT EXISTS anityaIdIndex ON packages(anityaId)
        """.stripMargin
 
-  private val subscriptionTableName = "subscriptions"
-
   private val createSubscriptionsTable =
     sql"""
          |CREATE TABLE IF NOT EXISTS `subscriptions` (
@@ -58,10 +59,17 @@ object Persistence extends CustomLogging {
          |)
        """.stripMargin
 
-//  final case class UnsubscribeEmailFromPackage(email: EmailAddress, pkg: Package) extends EmailAction
-//  final case class UnsubscribeEmailFromAllPackages(email: EmailAddress) extends EmailAction
-//  final case class ChangeEmail(oldEmail: EmailAddress, newEmail: EmailAddress) extends EmailAction
-//  final case class SubscribeToPackages(email: Email, pkgs: NonEmptyList[Package]) extends WebAction
+  private val createUnsubscribeCodesTable =
+    sql"""
+         |CREATE TABLE IF NOT EXISTS `unsubscribeCodes` (
+         |`id` INTEGER NOT NULL,
+         |`code` TEXT NOT NULL,
+         |`subscriptionId` INTEGER NOT NULL,
+         |PRIMARY KEY(`id`),
+         |FOREIGN KEY(`subscriptionId`) REFERENCES `subscriptions`(`id`)
+         |)
+       """.stripMargin
+
   def processAction(action: PersistenceAction, transactor: Transactor[IO])(implicit contextShift: ContextShift[IO]): IO[Unit] = {
     action match {
       case UnsubscribeEmailFromAllPackages(email) =>
@@ -231,5 +239,6 @@ object Persistence extends CustomLogging {
     _ <- createPackagesTable.updateWithLogHandler(doobieLogHandler).run
     _ <- createSubscriptionsTable.updateWithLogHandler(doobieLogHandler).run
     _ <- createAnityaIdIndex.updateWithLogHandler(doobieLogHandler).run
+    _ <- createUnsubscribeCodesTable.updateWithLogHandler(doobieLogHandler).run
   } yield ()
 }

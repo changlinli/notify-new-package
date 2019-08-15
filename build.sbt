@@ -39,3 +39,5 @@ assemblyMergeStrategy in assembly := {
 }
 
 Test / fork := true
+Compile / run / fork := true
+connectInput in run := true

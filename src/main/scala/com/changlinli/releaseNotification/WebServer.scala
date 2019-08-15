@@ -304,6 +304,9 @@ object WebServer extends CustomLogging {
         _ <- Persistence.processAction(persistenceAction, transactor)
         response <- Ok(s"Processed inbound email with hook: $request!")
       } yield response
+    case GET -> Root / "unsubscribe" / code =>
+      Persistence
+      ???
     case GET -> Root / "search" :? SearchQueryMatcher(nameFragment) =>
       Persistence
         .searchForPackagesByNameFragment(nameFragment)
