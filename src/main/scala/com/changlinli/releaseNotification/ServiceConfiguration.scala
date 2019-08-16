@@ -3,7 +3,9 @@ package com.changlinli.releaseNotification
 import cats.effect.{Effect, IO}
 import cats.implicits._
 import org.http4s.Uri
+import org.http4s.Uri.{Host, Ipv4Address, Ipv6Address, RegName}
 import org.http4s.syntax.all._
+import org.http4s.util.CaseInsensitiveString
 import scopt.OptionParser
 
 sealed trait DatabaseCreationOption
@@ -18,7 +20,7 @@ final case class ServiceConfiguration(
   databaseFile: String = "sample.db",
   portNumber: Int = 8080,
   databaseCreationOpt: DatabaseCreationOption = PreexistingDatabase,
-  bindAddress: String = "127.0.0.1",
+  bindAddress: Host = Ipv4Address.unsafeFromString("127.0.0.1"),
   anityaUrl: Uri = uri"https://release-monitoring.org",
   rebuildPackageDatabase: PackageDatabaseOption = DoNotBulkDownloadPackageDatabase
 )
@@ -39,9 +41,14 @@ object ServiceConfiguration {
       (_, config) => config.copy(databaseCreationOpt = CreateFromScratch)
     }
 
-    opt[String]('a', "bind-address").action{
-      (address, config) => config.copy(bindAddress = address)
-    }
+    opt[String]('a', "bind-address")
+      .action{
+        (address, config) =>
+          val host = Ipv4Address.fromString(address)
+            .orElse(Ipv6Address.fromString(address))
+            .getOrElse(RegName(CaseInsensitiveString(address)))
+          config.copy(bindAddress = host)
+      }
 
     opt[String]('u', name="anitya-website-url")
       .validate{

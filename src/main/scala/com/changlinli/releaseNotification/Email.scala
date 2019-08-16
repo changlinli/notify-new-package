@@ -6,9 +6,10 @@ import com.sendgrid.{Method, Request, SendGrid}
 import com.sendgrid.helpers.mail.Mail
 import com.sendgrid.helpers.mail.objects.Content
 import com.sendgrid.helpers.mail.objects.{Email => SGEMail}
+import org.http4s.Uri.Host
 
-class Email(sendGrid: SendGrid, hostAddress: String) extends CustomLogging {
-  private val fullFromAddress = s"notification@$hostAddress"
+class Email(sendGrid: SendGrid, hostAddress: Host) extends CustomLogging {
+  private val fullFromAddress = s"notification@${hostAddress.value}"
   def email(to: EmailAddress, subject: String, content: String): IO[Unit] = IO {
     val sendGridContent = new Content("text/plain", content)
     val mail = new Mail(new SGEMail(fullFromAddress), subject, new SGEMail(to.str), sendGridContent)
@@ -30,6 +31,6 @@ class Email(sendGrid: SendGrid, hostAddress: String) extends CustomLogging {
 
 object Email {
   val sendGridApiKey = "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"
-  def initialize(hostAddress: String): IO[Email] =
+  def initialize(hostAddress: Host): IO[Email] =
     IO(new SendGrid(sendGridApiKey)).map(new Email(_, hostAddress))
 }

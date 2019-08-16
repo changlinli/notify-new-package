@@ -5,7 +5,7 @@ import java.security.{KeyStore, SecureRandom}
 import java.util.concurrent.TimeUnit
 
 import cats.data.{Kleisli, NonEmptyList}
-import cats.effect.{ConcurrentEffect, Effect, ExitCode, IO, Timer}
+import cats.effect.{ConcurrentEffect, ExitCode, IO, Timer}
 import cats.implicits._
 import com.rabbitmq.client.DefaultSaslConfig
 import dev.profunktor.fs2rabbit.config.declaration.{DeclarationQueueConfig, Durable, NonAutoDelete, NonExclusive}
@@ -22,8 +22,6 @@ import io.circe.{Decoder, DecodingFailure, HCursor, Json}
 import javax.net.ssl.{KeyManagerFactory, SSLContext, TrustManagerFactory}
 import org.http4s._
 import org.http4s.client.{Client, JavaNetClientBuilder}
-import org.http4s.implicits._
-import scopt.OptionParser
 
 import scala.concurrent.duration.FiniteDuration
 import scala.language.higherKinds
@@ -222,8 +220,8 @@ object Main extends MyIOApp with Logging {
                   logger.info(s"Emailing out an update of ${value.packageName} to $emailAddress")
                   emailSender.email(
                     to = emailAddress,
-                    subject = s"${value.packageName} was updated!",
-                    content = value.printEmailTitle
+                    subject = value.printEmailTitle,
+                    content = value.printEmailBody
                   )
                 }
               } yield ()

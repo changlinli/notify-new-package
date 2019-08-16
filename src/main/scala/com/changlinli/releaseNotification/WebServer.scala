@@ -2,16 +2,18 @@ package com.changlinli.releaseNotification
 
 import java.util.concurrent.TimeUnit
 
-import cats.data.{EitherT, Ior, NonEmptyList}
+import cats.data.{EitherT, Ior, IorT, NonEmptyList}
 import cats.effect.{Blocker, ContextShift, Effect, IO, Timer}
 import cats.implicits._
-import com.changlinli.releaseNotification.data.{FullPackage, PackageName}
+import cats.kernel.Semigroup
+import com.changlinli.releaseNotification.data.{FullPackage, PackageName, UnsubscribeCode}
 import com.changlinli.releaseNotification.ids.AnityaId
 import doobie.free.connection.ConnectionIO
 import doobie.implicits._
 import doobie.util.transactor.Transactor
 import io.circe._
 import io.circe.syntax._
+import org.http4s.Uri.{Authority, Host, RegName, Scheme}
 import org.http4s._
 import org.http4s.circe._
 import org.http4s.client.Client
@@ -34,6 +36,7 @@ object WebServer extends CustomLogging {
   final case class ChangeEmail(oldEmail: EmailAddress, newEmail: EmailAddress) extends EmailAction with PersistenceAction
 
   sealed trait WebAction
+  final case class UnsubscribeUsingCode(code: UnsubscribeCode) extends WebAction
   final case class SubscribeToPackages(email: EmailAddress, pkgs: NonEmptyList[AnityaId]) extends WebAction
   object SubscribeToPackages {
     def fromUrlForm(urlForm: UrlForm): Either[String, SubscribeToPackages] = {
@@ -96,20 +99,6 @@ object WebServer extends CustomLogging {
     import io.circe.generic.semiauto._
     implicit val decodeAnityaProject: Decoder[RawAnityaProject] = deriveDecoder
     implicit val encodeAnityaProject: Encoder[RawAnityaProject] = deriveEncoder
-  }
-
-  def requestByProjectName(client: Client[IO], anityaPackageEndpoint: Uri, projectName: String, executionContext: ExecutionContext): IO[Either[Error, RawAnityaProject]] = {
-    val requestUrl = anityaPackageEndpoint / "api" / "v2" / "packages" +? ("name", projectName)
-    implicit val contextShift: ContextShift[IO] = IO.contextShift(executionContext)
-    client
-      .expect[Json](requestUrl)
-      .map{ json =>
-        Decoder[RawAnityaProjectResultPage].decodeJson(json).leftMap(AnityaProjectJsonWasInUnexpectedFormat(json, _))
-      }
-      .map{ result =>
-        result
-          .flatMap(page => page.items.headOption.toRight(ProjectNameNotFoundInAnitya(projectName)))
-      }
   }
 
   type ErrorTIO[A] = EitherT[IO, Error, A]
@@ -195,12 +184,109 @@ object WebServer extends CustomLogging {
       .value
   }
 
-  sealed trait Error extends Exception with Product with Serializable
-  final case class NoPackagesFoundForAnityaIds(anityaIds: NonEmptyList[AnityaId]) extends Error
-  final case class AnityaProjectJsonWasInUnexpectedFormat(json: Json, error: DecodingFailure) extends Error
-  final case class ProjectNameNotFoundInAnitya(projectName: String) extends Error
+  sealed trait Error extends Exception with Product with Serializable {
+    val humanReadableMessage: String
 
-  def webActionToPersistenceAction(webAction: WebAction)(implicit contextShift: ContextShift[IO]): ConnectionIO[Ior[Error, PersistenceAction]] =
+    override def getMessage: String = humanReadableMessage
+  }
+  final case class NoPackagesFoundForAnityaIds(anityaIds: NonEmptyList[AnityaId]) extends Error {
+    override val humanReadableMessage: String =
+      s"We were unable to find any packages corresponding to the following anitya IDs: ${anityaIds.map(_.toInt.toString).mkString(",")}"
+  }
+  final case class AnityaProjectJsonWasInUnexpectedFormat(json: Json, error: DecodingFailure) extends Error {
+    override val humanReadableMessage: String =
+      s"The JSON passed ($json) in failed to decode properly. We saw the following error: ${error.message}"
+  }
+
+  def getFullPackagesFromSubscribeToPackages(
+    email: EmailAddress,
+    anityaIds: NonEmptyList[AnityaId]
+  ): ConnectionIO[Ior[NoPackagesFoundForAnityaIds, NonEmptyList[FullPackage]]] = {
+    Persistence.retrievePackages(anityaIds)
+      .map{
+        anityaIdToFullPackage =>
+          val anityaIdToFullPackageOpt = anityaIds
+            .map(anityaId => anityaId -> anityaIdToFullPackage.get(anityaId))
+          val firstElem = anityaIdToFullPackageOpt.head match {
+            case (_, Some(fullPackage)) =>
+              Ior.Right(NonEmptyList.of(fullPackage))
+            case (anityaId, None) =>
+              Ior.Left(NoPackagesFoundForAnityaIds(NonEmptyList.of(anityaId)))
+          }
+          anityaIdToFullPackageOpt.tail.foldLeft(firstElem){
+            case (Ior.Both(noPackagesFound, subscribeToPackagesFullName), (_, Some(fullPackage))) =>
+              Ior.Both(noPackagesFound, fullPackage :: subscribeToPackagesFullName)
+            case (Ior.Both(noPackagesFound, subscribeToPackagesFullName), (anityaId, None)) =>
+              Ior.Both(noPackagesFound.copy(anityaIds = anityaId :: noPackagesFound.anityaIds), subscribeToPackagesFullName)
+            case (Ior.Right(subscribeToPackagesFullName), (_, Some(fullPackage))) =>
+              Ior.Right(fullPackage :: subscribeToPackagesFullName)
+            case (Ior.Right(subscribeToPackagesFullName), (anityaId, None)) =>
+              Ior.Both(NoPackagesFoundForAnityaIds(NonEmptyList.of(anityaId)), subscribeToPackagesFullName)
+            case (Ior.Left(noPackagesFound), (_, Some(fullPackage))) =>
+              Ior.Both(noPackagesFound, NonEmptyList.of(fullPackage))
+            case (Ior.Left(noPackagesFound), (anityaId, None)) =>
+              Ior.Left(noPackagesFound.copy(anityaIds = anityaId :: noPackagesFound.anityaIds))
+          }
+      }
+  }
+
+  def zipAnityaIdsWithUnsubscribeCodes(anityaIds: NonEmptyList[AnityaId]): IO[NonEmptyList[(AnityaId, UnsubscribeCode)]] = {
+    anityaIds.traverse(anityaId => UnsubscribeCode.generateUnsubscribeCode.map((anityaId, _)))
+  }
+
+  def processDatabaseResponse(
+    email: EmailAddress,
+    resultOfSubscribe: Ior[NoPackagesFoundForAnityaIds, NonEmptyList[(FullPackage, UnsubscribeCode)]],
+    emailSender: Email,
+    hostAddress: Host,
+    hostPort: Int
+  ): IO[Response[IO]] = {
+    resultOfSubscribe match {
+      case Ior.Both(err @ NoPackagesFoundForAnityaIds(anityaIds), pkgsWithUnsubscribeCodes) =>
+        val emailAction = emailSuccessfullySubscribedPackages(
+          emailSender,
+          email,
+          pkgsWithUnsubscribeCodes,
+          hostAddress,
+          hostPort
+        )
+        emailAction.>>(Ok(s"Successfully submitted form! (with some errors: $err)"))
+      case Ior.Left(err) =>
+        logger.info(s"User sent in request that failed", err)
+        BadRequest(s"You failed! ${err.humanReadableMessage}")
+      case Ior.Right(pkgsWithUnsubscribeCodes) =>
+        emailSuccessfullySubscribedPackages(
+          emailSender,
+          email,
+          pkgsWithUnsubscribeCodes,
+          hostAddress,
+          hostPort
+        ) >> Ok("Successfully submitted form!")
+    }
+  }
+
+  def fullySubscribeToPackages(
+    email: EmailAddress,
+    anityaIdsWithUnsubscribeCodes: NonEmptyList[(AnityaId, UnsubscribeCode)]
+  ): ConnectionIO[Ior[NoPackagesFoundForAnityaIds, NonEmptyList[(FullPackage, UnsubscribeCode)]]] = {
+    val unsubscribeCodes = anityaIdsWithUnsubscribeCodes.map(_._2)
+    val getFullPackages = getFullPackagesFromSubscribeToPackages(
+      email,
+      anityaIdsWithUnsubscribeCodes.map(_._1)
+    )
+    implicit val semigroupLeft: Semigroup[NoPackagesFoundForAnityaIds] =
+      Semigroup.instance[NoPackagesFoundForAnityaIds]{(a, _) => a}
+    IorT(getFullPackages)
+      .map(fullPackages => fullPackages.zipWith(unsubscribeCodes)((_, _)))
+      .flatMap{
+        pkgsWithCode =>
+          IorT.right[NoPackagesFoundForAnityaIds](Persistence.subscribeToPackagesFullName(email, pkgsWithCode))
+            .as(pkgsWithCode)
+      }
+      .value
+  }
+
+  def webActionToPersistenceAction(webAction: WebAction): ConnectionIO[Ior[Error, PersistenceAction]] =
     webAction match {
       case subscribeToPackages: SubscribeToPackages =>
         Persistence.retrievePackages(subscribeToPackages.pkgs)
@@ -245,7 +331,9 @@ object WebServer extends CustomLogging {
   def webService(
     emailSender: Email,
     blocker: Blocker,
-    transactor: Transactor[IO]
+    transactor: Transactor[IO],
+    hostAddress: Host,
+    hostPort: Int
   )(implicit contextShift: ContextShift[IO]
   ): HttpRoutes[IO] = HttpRoutes.of[IO]{
     case request @ GET -> Root =>
@@ -262,37 +350,12 @@ object WebServer extends CustomLogging {
           case Left(errMsg) =>
             BadRequest(errMsg)
           case Right(incomingSubscription) =>
-            infoIO(s"Persisting the following subscription: $incomingSubscription")
-              .>>{
-                webActionToPersistenceAction(incomingSubscription)
-                  .transact(transactor)
-                  .flatMap{
-                    errIorAction => errIorAction.traverse(Persistence.processAction(_, transactor)).as(errIorAction)
-                  }
-                  .flatMap{
-                    case Ior.Both(err @ NoPackagesFoundForAnityaIds(anityaIds), action) =>
-                      action match {
-                        case SubscribeToPackagesFullName(_, pkgs) =>
-                          val emailAction = emailSuccessfullySubscribedPackages(
-                            emailSender,
-                            incomingSubscription.email,
-                            pkgs
-                          )
-                          emailAction.>>(Ok(s"Successfully submitted form! (with some errors: $err)"))
-                      }
-                    case Ior.Left(err) =>
-                      BadRequest(s"You failed! $err")
-                    case Ior.Right(action) =>
-                      action match {
-                        case SubscribeToPackagesFullName(_, pkgs) =>
-                          emailSuccessfullySubscribedPackages(
-                            emailSender,
-                            incomingSubscription.email,
-                            pkgs
-                          ) >> Ok("Successfully submitted form!")
-                      }
-                  }
-              }
+            for {
+              _ <- infoIO(s"Persisting the following subscription: $incomingSubscription")
+              packagesWithAnityaIds <- zipAnityaIdsWithUnsubscribeCodes(incomingSubscription.pkgs)
+              resultOfSubscription <- fullySubscribeToPackages(incomingSubscription.email, packagesWithAnityaIds).transact(transactor)
+              response <- processDatabaseResponse(incomingSubscription.email, resultOfSubscription, emailSender, hostAddress, hostPort)
+            } yield response
         }
       } yield response
     case request @ GET -> Root / "incomingEmail" =>
@@ -304,9 +367,11 @@ object WebServer extends CustomLogging {
         _ <- Persistence.processAction(persistenceAction, transactor)
         response <- Ok(s"Processed inbound email with hook: $request!")
       } yield response
-    case GET -> Root / "unsubscribe" / code =>
+    case GET -> Root / subscribePathComponent / code if subscribePathComponent == unsubscribePath =>
       Persistence
-      ???
+        .unsubscribeUsingCode(UnsubscribeCode.unsafeFromString(code))
+        .transact(transactor)
+        .flatMap(numOfPackagesUnsubscribed => Ok(s"Unsubscribed from this many packages: ${numOfPackagesUnsubscribed.toString}"))
     case GET -> Root / "search" :? SearchQueryMatcher(nameFragment) =>
       Persistence
         .searchForPackagesByNameFragment(nameFragment)
@@ -314,22 +379,53 @@ object WebServer extends CustomLogging {
         .flatMap(packages => Ok(packages.asJson))
   }
 
+  val unsubscribePath: String = "unsubscribe"
+
   object SearchQueryMatcher extends QueryParamDecoderMatcher[String]("name")
+
+  private def printPackage(
+    pkg: FullPackage,
+    unsubscribeCode: UnsubscribeCode,
+    hostAddress: Host,
+    hostPort: Int
+  ): String = {
+    val releaseMonitoringLink = Uri(
+      scheme = Some(Scheme.https),
+      authority = Some(Authority(host = RegName("release-monitoring.org"))),
+      path = s"/project/${pkg.anityaId}/"
+    )
+    s"""
+       |Package Name: ${pkg.name.str}
+       |Package Homepage: ${pkg.homepage}
+       |release-monitoring.org link (see the bottom of this email): ${releaseMonitoringLink.renderString}
+       |Unsubscribe link (see the bottom of this email): ${unsubscribeCode.formUnsubscribeUri(hostAddress, hostPort).renderString}
+     """.stripMargin
+  }
 
   private def emailSuccessfullySubscribedPackages(
     emailSender: Email,
     emailAddress: EmailAddress,
-    packages: NonEmptyList[FullPackage]
+    packages: NonEmptyList[(FullPackage, UnsubscribeCode)],
+    hostAddress: Host,
+    hostPort: Int
   ): IO[Unit] = {
     val content =
       s"""
+         |Hi you've signed up for email notifications about new packages!
+         |
          |You will get an email any time one of the following packages gets a new version:
          |
-         |${packages.map{p => s"${p.name.str} (homepage: ${p.homepage}, Anitya ID: ${p.anityaId})"}.mkString("\n\n")}
+         |${packages.map{case (p, unsubscribeCode) => printPackage(p, unsubscribeCode, hostAddress, hostPort)}.mkString("\n\n")}
+         |
+         |If you'd like to unsubscribe to updates for a particular package, simply entering any of those unsubscribe links into your web browser will do the trick.
+         |
+         |I currently haven't implemented the ability to unsubscribe from all packages at once. If you'd like to do so, please just send an email to admin@${hostAddress.renderString}
+         |
+         |The Anitya ID is used to tie a package to its representation in the Fedora backend system that powers this service. Because multiple package names
        """.stripMargin
     emailSender.email(
       to = emailAddress,
-      subject = s"Signed up for notifications about ${packages.map(_.name.str).mkString(",")}",
+      subject = s"Signed up for notifications about ${packages.map(_._1.name.str).mkString(",")}",
       content = content
     )
   }
@@ -345,15 +441,15 @@ object WebServer extends CustomLogging {
   def runWebServer(
     emailSender: Email,
     port: Int,
-    ipAddress: String,
+    hostAddress: Host,
     blocker: Blocker,
     transactor: Transactor[IO]
   )(implicit timer: Timer[IO],
     contextShift: ContextShift[IO]
   ): IO[Unit] =
     BlazeServerBuilder[IO]
-      .bindHttp(port, ipAddress)
-      .withHttpApp(webService(emailSender, blocker, transactor).orNotFound)
+      .bindHttp(port, hostAddress.renderString)
+      .withHttpApp(webService(emailSender, blocker, transactor, hostAddress, port).orNotFound)
       .serve
       .compile
       .drain

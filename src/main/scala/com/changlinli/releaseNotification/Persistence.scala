@@ -2,15 +2,19 @@ package com.changlinli.releaseNotification
 
 import java.nio.charset.Charset
 import java.security.SecureRandom
+import java.time.Instant
+import java.util.Properties
 
-import cats.data.NonEmptyList
+import cats.Id
+import cats.data.{Kleisli, NonEmptyList}
 import cats.effect.{Blocker, ContextShift, IO, Resource}
 import cats.implicits._
 import com.changlinli.releaseNotification.WebServer._
 import com.changlinli.releaseNotification.data.{FullPackage, PackageName, UnsubscribeCode}
-import com.changlinli.releaseNotification.ids.AnityaId
+import com.changlinli.releaseNotification.ids.{AnityaId, PackageId, SubscriptionId}
 import doobie.{Transactor, _}
 import doobie.implicits._
+import org.sqlite.SQLiteConfig
 import org.sqlite.SQLiteConfig.JournalMode
 import org.sqlite.javax.SQLiteConnectionPoolDataSource
 
@@ -55,7 +59,8 @@ object Persistence extends CustomLogging {
          |PRIMARY KEY(`id`),
          |FOREIGN KEY(`emailId`) REFERENCES `emails`(`id`),
          |FOREIGN KEY(`packageId`) REFERENCES `packages`(`id`),
-         |CHECK (specialType IS NOT NULL or packageId IS NOT NULL)
+         |CHECK (specialType IS NOT NULL or packageId IS NOT NULL),
+         |UNIQUE(emailId, packageId)
          |)
        """.stripMargin
 
@@ -66,9 +71,68 @@ object Persistence extends CustomLogging {
          |`code` TEXT NOT NULL,
          |`subscriptionId` INTEGER NOT NULL,
          |PRIMARY KEY(`id`),
-         |FOREIGN KEY(`subscriptionId`) REFERENCES `subscriptions`(`id`)
+         |FOREIGN KEY(`subscriptionId`) REFERENCES `subscriptions`(`id`),
+         |UNIQUE (subscriptionId),
+         |UNIQUE (code)
          |)
        """.stripMargin
+
+  type WithInstantT[F[_], A] = Kleisli[F, Instant, A]
+
+  type WithInstant[A] = WithInstantT[Id, A]
+
+  private def createUnsubscribeCodeQuery(freshCode: UnsubscribeCode, subscription: SubscriptionId): doobie.Update0 = {
+    sql"""
+         |INSERT INTO `unsubscribeCodes` (code, subscriptionId) VALUES (${freshCode.str}, ${subscription.toInt})
+       """.stripMargin
+      .updateWithLogHandler(doobieLogHandler)
+  }
+
+  def getUnsubscribeCodeForSubscriptionQuery(subscriptionId: SubscriptionId): doobie.Query0[String] = {
+    sql"""SELECT code FROM unsubscribeCodes WHERE subscriptionId = ${subscriptionId.toInt}"""
+      .stripMargin
+      .queryWithLogHandler[String](doobieLogHandler)
+  }
+
+  def getUnsubscribeCodeForSubscription(subscriptionId: SubscriptionId): ConnectionIO[Option[UnsubscribeCode]] = {
+    getUnsubscribeCodeForSubscriptionQuery(subscriptionId)
+      // Note that we assume that we have a valid unsubscribe code since we're
+      // getting it directly from the DB, which is why we use the
+      // unsafeFromString method here
+      .map(UnsubscribeCode.unsafeFromString)
+      .to[List]
+      .map(_.headOption)
+  }
+
+  def unsubscribeUsingCodeQuery(code: UnsubscribeCode): doobie.Update0 = {
+    sql"""DELETE FROM `subscriptions` WHERE
+         |subscriptions.id IN (
+         |  SELECT unsubscribeCodes.subscriptionId FROM `unsubscribeCodes` WHERE
+         |    subscriptions.id = unsubscribeCodes.subscriptionId
+         |)""".stripMargin.updateWithLogHandler(doobieLogHandler)
+  }
+
+  def getSubscriptionIdFromCodeQuery(code: UnsubscribeCode): doobie.Query0[Int] = {
+    sql"""SELECT subscriptionId FROM unsubscribeCodes WHERE code = ${code.str}"""
+      .queryWithLogHandler[Int](doobieLogHandler)
+  }
+
+  def getSubsciptionIdFromCode(code: UnsubscribeCode): ConnectionIO[Option[SubscriptionId]] = {
+    getSubscriptionIdFromCodeQuery(code).to[List].map(_.headOption.map(SubscriptionId.apply))
+  }
+
+  def unsubscribeUsingCode(code: UnsubscribeCode): doobie.ConnectionIO[Int] = {
+    for {
+      subscriptionIdOpt <- getSubsciptionIdFromCode(code)
+      _ <- markUnsubscribeCodeAsUsedQuery(code).run
+      rows <- subscriptionIdOpt.fold(0.pure[ConnectionIO])(unsubscribeUsingSubscriptionId)
+    } yield rows
+  }
+
+  def markUnsubscribeCodeAsUsedQuery(code: UnsubscribeCode): doobie.Update0 = {
+    sql"""DELETE FROM unsubscribeCodes WHERE code=${code.str}"""
+      .updateWithLogHandler(doobieLogHandler)
+  }
 
   def processAction(action: PersistenceAction, transactor: Transactor[IO])(implicit contextShift: ContextShift[IO]): IO[Unit] = {
     action match {
@@ -79,7 +143,10 @@ object Persistence extends CustomLogging {
       case UnsubscribeEmailFromPackage(email, pkg) =>
         unsubscribeEmailFromPackage(email, pkg).transact(transactor).void
       case SubscribeToPackagesFullName(email, pkgs) =>
-        subscribeToPackagesFullName(email, pkgs).transact(transactor).void
+        val zippedPkgs = pkgs.traverse(pkg => UnsubscribeCode.generateUnsubscribeCode.map((pkg, _)))
+        zippedPkgs.flatMap{
+          subscribeToPackagesFullName(email, _).transact(transactor).void
+        }
     }
   }
 
@@ -99,7 +166,7 @@ object Persistence extends CustomLogging {
   }
 
   def updatePackageQuery(id: Int, packageName: String, homepage: String, anityaId: Int): doobie.Update0 = {
-    sql"""UPDATE `packages` set name=$packageName, homepage=$homepage, anityaId=$anityaId WHERE id=$id"""
+    sql"""UPDATE `packages` SET name=$packageName, homepage=$homepage, anityaId=$anityaId WHERE id=$id"""
       .updateWithLogHandler(doobieLogHandler)
   }
 
@@ -125,9 +192,12 @@ object Persistence extends CustomLogging {
     } yield result
   }
 
-  def retrievePackages(anityaIds: NonEmptyList[AnityaId])(implicit contextShift: ContextShift[IO]): ConnectionIO[Map[AnityaId, FullPackage]] = {
-    val query = fr"""SELECT id, name, homepage, anityaId FROM packages WHERE """ ++
-      Fragments.in(fr"anityaId", anityaIds.map(_.toInt))
+  def retrievePackages(anityaIds: NonEmptyList[AnityaId]): ConnectionIO[Map[AnityaId, FullPackage]] = {
+    val query =
+      fr"""
+          |SELECT packages.id, packages.name, packages.homepage, packages.anityaId FROM packages
+          | WHERE """.stripMargin ++
+      Fragments.in(fr"packages.anityaId", anityaIds.map(_.toInt))
     query
       .queryWithLogHandler[(Int, String, String, Int)](doobieLogHandler)
       .to[List]
@@ -136,7 +206,8 @@ object Persistence extends CustomLogging {
           elems
             .map{
               case (id, name, homepage, anityaId) =>
-                AnityaId(anityaId) -> FullPackage(name = PackageName(name), homepage = homepage, anityaId = anityaId, packageId = id)
+                AnityaId(anityaId) ->
+                  FullPackage(name = PackageName(name), homepage = homepage, anityaId = anityaId, packageId = id)
             }
             .toMap
       }
@@ -146,11 +217,14 @@ object Persistence extends CustomLogging {
     sql"""INSERT OR IGNORE INTO `emails` (emailAddress) VALUES (${email.str})""".updateWithLogHandler(doobieLogHandler)
   }
 
-  def subscribeToPackagesFullName(email: EmailAddress, pkgs: NonEmptyList[FullPackage]): ConnectionIO[Int] = {
+  def subscribeToPackagesFullName(email: EmailAddress, pkgsWithUnsubscribeCodes: NonEmptyList[(FullPackage, UnsubscribeCode)]): ConnectionIO[Int] = {
+    val pkgs = pkgsWithUnsubscribeCodes.map(_._1)
     val retrieveEmailId =
       sql"""SELECT `id` FROM `emails` WHERE emailAddress = ${email.str}"""
     def insertIntoSubscriptions(emailId: Int, pkg: FullPackage) =
-      sql"""INSERT INTO `subscriptions` (emailId, packageId) VALUES ($emailId, ${pkg.packageId}) """
+      sql"""INSERT OR IGNORE INTO `subscriptions` (emailId, packageId) VALUES ($emailId, ${pkg.packageId}) """
+    def retrieveSubscriptionId(emailId: Int, pkgId: PackageId) =
+      sql"""SELECT `id` FROM `subscriptions` WHERE emailId = $emailId AND packageId=${pkgId.toInt}"""
     for {
       _ <- insertIntoEmailTableIfNotExist(email).run
       // FIXME: This should be a fatal error, but we should have a better error message
@@ -159,6 +233,22 @@ object Persistence extends CustomLogging {
         case Nil => throw new Exception(s"This is a programming bug! Because we just inserted an email in this transaction")
       }
       rowNums <- pkgs.traverse(insertIntoSubscriptions(emailId, _).updateWithLogHandler(doobieLogHandler).run)
+      _ <- pkgsWithUnsubscribeCodes
+        .traverse{
+          case (pkg, unsubscribeCode) => retrieveSubscriptionId(emailId, PackageId(pkg.packageId))
+            .queryWithLogHandler[Int](doobieLogHandler)
+            .to[List]
+            // FIXME: This should be a fatal error, but we should have a better error message
+            .map{
+              _.headOption
+                .getOrElse(throw new Exception(s"This is a programming bug! Because we just inserted the subscription in this transaction"))
+            }
+            .map((_, unsubscribeCode))
+        }
+        .flatMap{
+          subscriptionIds => subscriptionIds
+            .traverse{case (subscriptionId, unsubscribeCode) => createUnsubscribeCodeQuery(unsubscribeCode, SubscriptionId(subscriptionId)).run}
+        }
     } yield rowNums.reduce
   }
 
@@ -171,6 +261,12 @@ object Persistence extends CustomLogging {
   def unsubscribe(email: EmailAddress): ConnectionIO[Int] = {
     sql"""DELETE FROM subscriptions WHERE emailId IN (SELECT id FROM emails WHERE emailAddress=${email.str})"""
       .update
+      .run
+  }
+
+  def unsubscribeUsingSubscriptionId(subscriptionId: SubscriptionId): ConnectionIO[Int] = {
+    sql"""DELETE FROM subscriptions WHERE id = ${subscriptionId.toInt}"""
+      .updateWithLogHandler(doobieLogHandler)
       .run
   }
 
@@ -241,4 +337,5 @@ object Persistence extends CustomLogging {
     _ <- createAnityaIdIndex.updateWithLogHandler(doobieLogHandler).run
     _ <- createUnsubscribeCodesTable.updateWithLogHandler(doobieLogHandler).run
   } yield ()
+
 }
