@@ -249,7 +249,7 @@ object WebServer extends CustomLogging {
   def processDatabaseResponse(
     email: EmailAddress,
     resultOfSubscribe: Ior[NoPackagesFoundForAnityaIds, NonEmptyList[(FullPackage, UnsubscribeCode)]],
-    emailSender: Email,
+    emailSender: EmailSender,
     hostAddress: Host,
     hostPort: Int
   ): IO[Response[IO]] = {
@@ -320,7 +320,7 @@ object WebServer extends CustomLogging {
 
   // If you see a warning here about unreachable code see https://github.com/scala/bug/issues/11457
   def webService(
-    emailSender: Email,
+    emailSender: EmailSender,
     blocker: Blocker,
     transactor: Transactor[IO],
     hostAddress: Host,
@@ -390,7 +390,7 @@ object WebServer extends CustomLogging {
   }
 
   private def emailSuccessfullySubscribedPackages(
-    emailSender: Email,
+    emailSender: EmailSender,
     emailAddress: EmailAddress,
     packages: NonEmptyList[(FullPackage, UnsubscribeCode)],
     hostAddress: Host,
@@ -426,7 +426,7 @@ object WebServer extends CustomLogging {
       .traverse(pkg => Persistence.insertIntoDB(name = incomingSubscriptionRequest.emailAddress, packageName = pkg))
 
   def runWebServer(
-    emailSender: Email,
+    emailSender: EmailSender,
     port: Int,
     hostAddress: Host,
     blocker: Blocker,

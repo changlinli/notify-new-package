@@ -30,7 +30,7 @@ object RabbitMQListener extends CustomLogging {
   def consumeRabbitMQ(
     stream: fs2.Stream[IO, AmqpEnvelope[Json]],
     doobieTransactor: Transactor[IO],
-    emailSender: Email
+    emailSender: EmailSender
   )(implicit contextShift: ContextShift[IO]): fs2.Stream[IO, Unit] = {
     stream
       .map(parseEnvelope)
