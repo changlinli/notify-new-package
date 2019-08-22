@@ -6,7 +6,7 @@ import io.circe.{Decoder, Encoder}
 import io.circe.generic.semiauto._
 import org.http4s.Uri.Host
 
-final case class FullPackage(name: PackageName, homepage: String, anityaId: Int, packageId: Int)
+final case class FullPackage(name: PackageName, homepage: String, anityaId: Int, packageId: Int, currentVersion: PackageVersion)
 
 object FullPackage {
   implicit val fullPackageDecoder: Decoder[FullPackage] = deriveDecoder

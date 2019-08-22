@@ -28,7 +28,9 @@ libraryDependencies += "org.http4s" %% "http4s-dsl" % http4sVersion
 libraryDependencies += "org.http4s" %% "http4s-circe" % http4sVersion
 libraryDependencies += "org.http4s" %% "http4s-blaze-server" % http4sVersion
 libraryDependencies += "org.http4s" %% "http4s-blaze-client" % http4sVersion
+libraryDependencies += "org.http4s" %% "http4s-scalatags" % http4sVersion
 libraryDependencies += "com.github.scopt" %% "scopt" % "3.7.1"
+libraryDependencies += "com.lihaoyi" %% "scalatags" % "0.7.0"
 
 assemblyMergeStrategy in assembly := {
   // For now we're not going to use anything JDK-9 related

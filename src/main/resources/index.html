@@ -66,9 +66,12 @@
       homepageElement.appendChild(homepageLink);
       const anityaIdElement = document.createElement('li');
       anityaIdElement.textContent = 'Anitya ID: ' + resultElem.anityaId;
+      const currentVersionElement = document.createElement('li');
+      currentVersionElement.textContent = 'Current Version: ' + resultElem.currentVersion;
       descriptionList.appendChild(nameElement);
       descriptionList.appendChild(homepageElement);
       descriptionList.appendChild(anityaIdElement);
+      descriptionList.appendChild(currentVersionElement);
       return descriptionList;
     }
 
@@ -170,6 +173,11 @@
       }
     }
 
+    function indicateThatSearchHasBeenSent(searchString) {
+      const searchResultsDiv = document.getElementById('searchResults');
+      searchResultsDiv.textContent = '(This is taking a bit longer than normal...) Searching for packages matching "' + searchString + '"';
+    }
+
     function makeSearchRequest(searchString) {
       const httpRequest = new XMLHttpRequest();
 
@@ -177,12 +185,16 @@
         console.log("We failed to create an XMLHttpRequest!");
       }
 
+      const timeoutId = window.setTimeout(function () {indicateThatSearchHasBeenSent(searchString)}, 2000);
+
       httpRequest.onreadystatechange = function () {
         if (httpRequest.readyState === XMLHttpRequest.DONE) {
+          window.clearTimeout(timeoutId);
           updateSearchResults(JSON.parse(httpRequest.responseText));
         }
       }
       httpRequest.open('GET', '/search?name=' + input.value);
+
       httpRequest.send();
     }
 

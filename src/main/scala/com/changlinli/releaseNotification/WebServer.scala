@@ -7,7 +7,7 @@ import cats.effect.{Blocker, ContextShift, Effect, IO, Timer}
 import cats.implicits._
 import cats.kernel.Semigroup
 import com.changlinli.releaseNotification.data.{FullPackage, PackageName, UnsubscribeCode}
-import com.changlinli.releaseNotification.ids.AnityaId
+import com.changlinli.releaseNotification.ids.{AnityaId, SubscriptionId}
 import doobie.free.connection.ConnectionIO
 import doobie.implicits._
 import doobie.util.transactor.Transactor
@@ -19,8 +19,10 @@ import org.http4s.circe._
 import org.http4s.client.Client
 import org.http4s.dsl.io._
 import org.http4s.implicits._
+import org.http4s.scalatags._
 import org.http4s.server.Router
 import org.http4s.server.blaze.BlazeServerBuilder
+import org.sqlite.{SQLiteErrorCode, SQLiteException}
 
 import scala.concurrent.duration.FiniteDuration
 import scala.language.higherKinds
@@ -189,6 +191,15 @@ object WebServer extends CustomLogging {
 
     override def getMessage: String = humanReadableMessage
   }
+  final case class SubscriptionAlreadyExists(subscriptionId: SubscriptionId, pkg: FullPackage, emailAddress: EmailAddress)
+  final case class SubscriptionsAlreadyExistErr(
+    allSubscriptionsThatAlreadyExist: NonEmptyList[SubscriptionAlreadyExists]
+  ) extends Error {
+    override val humanReadableMessage: String =
+      s"Subscriptions already exist for the following package ID, package name, subscription ID, and email addresses: " +
+        s"${allSubscriptionsThatAlreadyExist
+          .map(sub => s"Package ID: ${sub.subscriptionId.toInt}, Package name: ${sub.pkg.name}, Subscription ID: ${sub.subscriptionId.toInt}, Email: ${sub.emailAddress.str}")}"
+  }
   final case class NoPackagesFoundForAnityaIds(anityaIds: NonEmptyList[AnityaId]) extends Error {
     override val humanReadableMessage: String =
       s"We were unable to find any packages corresponding to the following anitya IDs: ${anityaIds.map(_.toInt.toString).mkString(",")}"
@@ -250,7 +261,7 @@ object WebServer extends CustomLogging {
           hostAddress,
           hostPort
         )
-        emailAction.>>(Ok(s"Successfully submitted form! (with some errors: $err)"))
+        emailAction.>>(Ok(HtmlGenerators.successfullySubmittedFrom(pkgsWithUnsubscribeCodes.map(_._1).toList)))
       case Ior.Left(err) =>
         logger.info(s"User sent in request that failed", err)
         BadRequest(s"You failed! ${err.humanReadableMessage}")
@@ -261,7 +272,7 @@ object WebServer extends CustomLogging {
           pkgsWithUnsubscribeCodes,
           hostAddress,
           hostPort
-        ) >> Ok("Successfully submitted form!")
+        ).>>(Ok(HtmlGenerators.successfullySubmittedFrom(pkgsWithUnsubscribeCodes.map(_._1).toList)))
     }
   }
 
@@ -326,13 +337,14 @@ object WebServer extends CustomLogging {
             for {
               _ <- infoIO(s"Persisting the following subscription: $incomingSubscription")
               packagesWithAnityaIds <- zipAnityaIdsWithUnsubscribeCodes(incomingSubscription.pkgs)
-              resultOfSubscription <- fullySubscribeToPackages(incomingSubscription.email, packagesWithAnityaIds).transact(transactor)
+              resultOfSubscription <- fullySubscribeToPackages(incomingSubscription.email, packagesWithAnityaIds)
+                .transact(transactor)
               response <- processDatabaseResponse(incomingSubscription.email, resultOfSubscription, emailSender, hostAddress, hostPort)
             } yield response
         }
       } yield response
     case request @ GET -> Root / "incomingEmail" =>
-      Ok(s"Yep this email hook is responding to GET requests!")
+      Ok(s"Yep this email hook is responding to GET requests! The request headers looked like $request")
     case request @ POST -> Root / "incomingEmail" =>
       for {
         action <- processInboundWebhook(request)
@@ -370,6 +382,7 @@ object WebServer extends CustomLogging {
     s"""
        |Package Name: ${pkg.name.str}
        |Package Homepage: ${pkg.homepage}
+       |Current Version: ${pkg.currentVersion.str}
        |release-monitoring.org link (see the bottom of this email): ${releaseMonitoringLink.renderString}
        |Unsubscribe link (see the bottom of this email): ${unsubscribeCode.formUnsubscribeUri(hostAddress, hostPort).renderString}
      """.stripMargin
