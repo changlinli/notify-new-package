@@ -6,7 +6,7 @@ import cats.data.NonEmptyList
 import cats.effect.{Blocker, ContextShift, IO}
 import com.changlinli.releaseNotification.Persistence
 import com.changlinli.releaseNotification.WebServer.EmailAddress
-import com.changlinli.releaseNotification.data.{FullPackage, PackageName, UnsubscribeCode}
+import com.changlinli.releaseNotification.data.{FullPackage, PackageName, PackageVersion, UnsubscribeCode}
 import com.changlinli.releaseNotification.ids.SubscriptionId
 import doobie.implicits._
 import doobie.scalatest.IOChecker
@@ -34,7 +34,7 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
         EmailAddress("hello@hello.com"),
         NonEmptyList.of(
           (
-            FullPackage(name = PackageName("hello"), homepage = "hello.com", anityaId = 1, packageId = 1),
+            FullPackage(name = PackageName("hello"), homepage = "hello.com", anityaId = 1, packageId = 1, currentVersion = PackageVersion("1.0")),
             UnsubscribeCode.unsafeFromString("unsubscribeString")
           )
         )
@@ -45,12 +45,12 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
   it should "succeed if the package exists" in {
     val action = for {
       _ <- Persistence.initializeDatabase
-      _ <- Persistence.upsertPackage("hello", "hello.com", 1)
+      _ <- Persistence.upsertPackage("hello", "hello.com", 1, PackageVersion("1.0"))
       _ <- Persistence.subscribeToPackagesFullName(
         EmailAddress("hello@hello.com"),
         NonEmptyList.of(
           (
-            FullPackage(name = PackageName("hello"), homepage = "hello.com", anityaId = 1, packageId = 1),
+            FullPackage(name = PackageName("hello"), homepage = "hello.com", anityaId = 1, packageId = 1, currentVersion = PackageVersion("1.0")),
             UnsubscribeCode.unsafeFromString("unsubscribeString")
           )
         )
@@ -69,12 +69,12 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
   it should "succeed in retrieving all email addresses subscribed to a to a dummy package" in {
     val action = for {
       _ <- Persistence.initializeDatabase
-      _ <- Persistence.upsertPackage("hello", "hello.com", 1)
+      _ <- Persistence.upsertPackage("hello", "hello.com", 1, PackageVersion("1.0"))
       _ <- Persistence.subscribeToPackagesFullName(
         EmailAddress("hello@hello.com"),
         NonEmptyList.of(
           (
-            FullPackage(name = PackageName("hello"), homepage = "hello.com", anityaId = 1, packageId = 1),
+            FullPackage(name = PackageName("hello"), homepage = "hello.com", anityaId = 1, packageId = 1, currentVersion = PackageVersion("1.0")),
             UnsubscribeCode.unsafeFromString("unsubscribeString")
           )
         )
@@ -86,20 +86,22 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
   it should "succeed in retrieving a package from the suffix of its name" in {
     val action = for {
       _ <- Persistence.initializeDatabase
-      _ <- Persistence.upsertPackage("hello", "hello.com", 1)
+      _ <- Persistence.upsertPackage("hello", "hello.com", 1, PackageVersion("1.0"))
       result <- Persistence.searchForPackagesByNameFragment("ello")
     } yield result
-    action.transact(transactor).unsafeRunSync() should be (List(FullPackage(name = PackageName("hello"), homepage = "hello.com", packageId = 1, anityaId = 1)))
+    action.transact(transactor).unsafeRunSync() should be (List(
+      FullPackage(name = PackageName("hello"), homepage = "hello.com", anityaId = 1, packageId = 1, currentVersion = PackageVersion("1.0")),
+    ))
   }
   it should "succeed in using an unsubscribe code for an existing unsubscribe code" in {
     val action = for {
       _ <- Persistence.initializeDatabase
-      _ <- Persistence.upsertPackage("hello", "hello.com", 1)
+      _ <- Persistence.upsertPackage("hello", "hello.com", 1, PackageVersion("1.0"))
       _ <- Persistence.subscribeToPackagesFullName(
         EmailAddress("hello@hello.com"),
         NonEmptyList.of(
           (
-            FullPackage(name = PackageName("hello"), homepage = "hello.com", anityaId = 1, packageId = 1),
+            FullPackage(name = PackageName("hello"), homepage = "hello.com", anityaId = 1, packageId = 1, currentVersion = PackageVersion("1.0")),
             UnsubscribeCode.unsafeFromString("unsubscribeString")
           )
         )

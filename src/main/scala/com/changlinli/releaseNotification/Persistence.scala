@@ -186,6 +186,15 @@ object Persistence extends CustomLogging {
       })
   }
 
+  private def updatePackageVersionQuery(anityaId: AnityaId, newVersion: PackageVersion): doobie.Update0 = {
+    sql"""UPDATE `packages` SET currentVersion=${newVersion.str} WHERE anityaId=${anityaId.toInt}"""
+      .updateWithLogHandler(doobieLogHandler)
+  }
+
+  def updatePackageVersion(anityaId: AnityaId, newVersion: PackageVersion): ConnectionIO[Int] = {
+    updatePackageVersionQuery(anityaId, newVersion).run
+  }
+
   def upsertPackage(packageName: String, homepage: String, anityaId: Int, version: PackageVersion): ConnectionIO[Int] = {
     for {
       listOfIdNameHomepageAnityaId <- retrievePackageByAnityaIdQuery(anityaId).to[List]

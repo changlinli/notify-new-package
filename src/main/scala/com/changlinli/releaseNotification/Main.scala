@@ -95,25 +95,6 @@ object Main extends MyIOApp with Logging {
       s"$homepage for more details."
   }
 
-  val anityaRoutingKeys: Set[RoutingKey] = Set(
-    RoutingKey("org.release-monitoring.prod.anitya.project.version.update"),
-    RoutingKey("org.fedoraproject.prod.hotness.update.bug.file")
-  )
-
-  sealed trait Error extends Exception
-  final case class PayloadParseFailure(decodingFailure: DecodingFailure, jsonAttempted: Json) extends Error
-  final case class IncorrectRoutingKey(routingKeyObserved: RoutingKey) extends Error
-
-  def parseEnvelope(envelope: AmqpEnvelope[Json]): Either[Error, DependencyUpdate] = {
-    val routingKeySeen = envelope.routingKey
-    if (anityaRoutingKeys.contains(routingKeySeen)) {
-      parsePayload(envelope.payload).left.map(PayloadParseFailure(_, envelope.payload))
-    } else {
-      logger.info(s"Throwing away payload because routing key was ${routingKeySeen.value}")
-      Left(IncorrectRoutingKey(routingKeySeen))
-    }
-  }
-
   implicit val dependencyUpdateDecoder: Decoder[DependencyUpdate] = new Decoder[DependencyUpdate] {
     override def apply(c: HCursor): Result[DependencyUpdate] = {
       for {
@@ -130,10 +111,6 @@ object Main extends MyIOApp with Logging {
         anityaId = anityaId
       )
     }
-  }
-
-  def parsePayload(payload: Json): Either[DecodingFailure, DependencyUpdate] = {
-    payload.as[DependencyUpdate]
   }
 
 
@@ -206,28 +183,7 @@ object Main extends MyIOApp with Logging {
         consumer <- fs2Rabbit.createAutoAckConsumer[Json](
           queueName = queueName
         )
-        _ <- consumer
-          .map(parseEnvelope)
-          .evalTap(x => IO(logger.info(x)))
-          .evalMap{
-            case Right(value) =>
-              for {
-                emailAddresses <- Persistence.retrieveAllEmailsWithAnityaId(doobieTransactor, value.anityaId)
-                _ <- IO(s"All email addresses subscribed to ${value.packageName}: $emailAddresses")
-                emailAddressesSubscribedToAllUpdates <- Persistence.retrieveAllEmailsSubscribedToAll(doobieTransactor)
-                _ <- IO(s"All email addresses subscribed to ALL: $emailAddressesSubscribedToAllUpdates")
-                _ <- (emailAddressesSubscribedToAllUpdates ++ emailAddresses).traverse{ emailAddress =>
-                  logger.info(s"Emailing out an update of ${value.packageName} to $emailAddress")
-                  emailSender.email(
-                    to = emailAddress,
-                    subject = value.printEmailTitle,
-                    content = value.printEmailBody
-                  )
-                }
-              } yield ()
-            case Left(PayloadParseFailure(decodeError, json)) => IO(logger.warn(s"We saw this payload parse error!: $decodeError\n$json"))
-            case Left(IncorrectRoutingKey(incorrectRoutingKey)) => IO(logger.debug(s"Ignoring this routing key... $incorrectRoutingKey"))
-          }
+        _ <- RabbitMQListener.consumeRabbitMQ(consumer, doobieTransactor, emailSender)
           .compile
           .drain
       } yield ()
