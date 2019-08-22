@@ -10,7 +10,7 @@ import cats.data.{Ior, Kleisli, NonEmptyList}
 import cats.effect.{Blocker, ContextShift, IO, Resource}
 import cats.implicits._
 import com.changlinli.releaseNotification.WebServer._
-import com.changlinli.releaseNotification.data.{FullPackage, PackageName, PackageVersion, UnsubscribeCode}
+import com.changlinli.releaseNotification.data.{EmailAddress, FullPackage, PackageName, PackageVersion, UnsubscribeCode}
 import com.changlinli.releaseNotification.ids.{AnityaId, EmailId, PackageId, SubscriptionId}
 import doobie.{Transactor, _}
 import doobie.implicits._
@@ -362,7 +362,8 @@ object Persistence extends CustomLogging {
   val retrieveAllEmailsSubscribedToAllA: ConnectionIO[List[EmailAddress]] =
     sql"""SELECT emailAddress FROM subscriptions INNER JOIN emails ON emails.id = subscriptions.emailId WHERE specialType='ALL'"""
       .query[String]
-      .map(EmailAddress.apply)
+      // We assume if the email address is in the database it's a valid string
+      .map(EmailAddress.unsafeFromString)
       .to[List]
 
   def retrieveAllEmailsSubscribedToAll(transactor: Transactor[IO])(implicit contextShift: ContextShift[IO]): IO[List[EmailAddress]] =
@@ -371,7 +372,8 @@ object Persistence extends CustomLogging {
   def retrieveAllEmailsWithAnityaIdA(anityaId: Int): ConnectionIO[List[EmailAddress]] =
     sql"""SELECT emailAddress FROM subscriptions INNER JOIN emails ON emails.id = subscriptions.emailId INNER JOIN packages ON packages.id = subscriptions.packageId WHERE packages.anityaId=$anityaId"""
       .query[String]
-      .map(EmailAddress.apply)
+      // We assume if the email address is in the database it's a valid string
+      .map(EmailAddress.unsafeFromString)
       .to[List]
 
   def retrieveAllEmailsWithAnityaId(

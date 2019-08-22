@@ -6,7 +6,7 @@ import cats.data.{EitherT, Ior, IorT, NonEmptyList}
 import cats.effect.{Blocker, ContextShift, Effect, IO, Timer}
 import cats.implicits._
 import cats.kernel.Semigroup
-import com.changlinli.releaseNotification.data.{FullPackage, PackageName, UnsubscribeCode}
+import com.changlinli.releaseNotification.data.{EmailAddress, FullPackage, PackageName, UnsubscribeCode}
 import com.changlinli.releaseNotification.ids.{AnityaId, SubscriptionId}
 import doobie.free.connection.ConnectionIO
 import doobie.implicits._
@@ -29,7 +29,6 @@ import scala.language.higherKinds
 
 object WebServer extends CustomLogging {
 
-  final case class EmailAddress(str: String)
 
   sealed trait Action
   sealed trait EmailAction extends Action
@@ -53,10 +52,12 @@ object WebServer extends CustomLogging {
           .flatMap(_.toRight("Received an empty list of packages to subscribe to!"))
           .flatMap(_.traverse(x => x.toIntOption.toRight(s"Attempted to convert $x into an integer as an AnityaId but it doesn't look like a valid integer!")))
         emailAddress <- urlForm
-          .values.get("emailAddress")
+          .values
+          .get("emailAddress")
           .flatMap(_.headOption)
           .toRight("Email address key not found!")
-      } yield SubscribeToPackages(EmailAddress(emailAddress), packages.map(AnityaId.apply))
+          .flatMap(candidateEmail => EmailAddress.fromString(candidateEmail).toRight(s"$candidateEmail was an invalid email address!"))
+      } yield SubscribeToPackages(emailAddress, packages.map(AnityaId.apply))
     }
   }
 
@@ -302,7 +303,7 @@ object WebServer extends CustomLogging {
     request.as[String].flatMap{
       body => Effect[F].delay(s"Body: $body")
     }
-    Effect[F].delay(UnsubscribeEmailFromAllPackages(EmailAddress("hello")))
+    Effect[F].delay(UnsubscribeEmailFromAllPackages(EmailAddress.unsafeFromString("hello@hello.com")))
   }
 
   def staticRoutes(blocker: Blocker)(implicit contextShift: ContextShift[IO]): HttpRoutes[IO] =

@@ -22,7 +22,7 @@ final case class ServiceConfiguration(
   databaseCreationOpt: DatabaseCreationOption = PreexistingDatabase,
   bindAddress: Host = Ipv4Address.unsafeFromString("127.0.0.1"),
   anityaUrl: Uri = uri"https://release-monitoring.org",
-  rebuildPackageDatabase: PackageDatabaseOption = DoNotBulkDownloadPackageDatabase
+  rebuildPackageDatabase: PackageDatabaseOption = RecreatePackageDatabaseFromBulkDownload
 )
 
 object ServiceConfiguration {

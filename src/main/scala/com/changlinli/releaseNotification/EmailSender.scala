@@ -1,7 +1,7 @@
 package com.changlinli.releaseNotification
 
 import cats.effect.IO
-import com.changlinli.releaseNotification.WebServer.EmailAddress
+import com.changlinli.releaseNotification.data.EmailAddress
 import com.sendgrid.{Method, Request, SendGrid}
 import com.sendgrid.helpers.mail.Mail
 import com.sendgrid.helpers.mail.objects.Content

@@ -5,8 +5,7 @@ import java.util.concurrent.Executors
 import cats.data.NonEmptyList
 import cats.effect.{Blocker, ContextShift, IO}
 import com.changlinli.releaseNotification.Persistence
-import com.changlinli.releaseNotification.WebServer.EmailAddress
-import com.changlinli.releaseNotification.data.{FullPackage, PackageName, PackageVersion, UnsubscribeCode}
+import com.changlinli.releaseNotification.data.{EmailAddress, FullPackage, PackageName, PackageVersion, UnsubscribeCode}
 import com.changlinli.releaseNotification.ids.SubscriptionId
 import doobie.implicits._
 import doobie.scalatest.IOChecker
@@ -31,7 +30,7 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
     val action = for {
       _ <- Persistence.initializeDatabase
       _ <- Persistence.subscribeToPackagesFullName(
-        EmailAddress("hello@hello.com"),
+        EmailAddress.unsafeFromString("hello@hello.com"),
         NonEmptyList.of(
           (
             FullPackage(name = PackageName("hello"), homepage = "hello.com", anityaId = 1, packageId = 1, currentVersion = PackageVersion("1.0")),
@@ -47,7 +46,7 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
       _ <- Persistence.initializeDatabase
       _ <- Persistence.upsertPackage("hello", "hello.com", 1, PackageVersion("1.0"))
       _ <- Persistence.subscribeToPackagesFullName(
-        EmailAddress("hello@hello.com"),
+        EmailAddress.unsafeFromString("hello@hello.com"),
         NonEmptyList.of(
           (
             FullPackage(name = PackageName("hello"), homepage = "hello.com", anityaId = 1, packageId = 1, currentVersion = PackageVersion("1.0")),
@@ -71,7 +70,7 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
       _ <- Persistence.initializeDatabase
       _ <- Persistence.upsertPackage("hello", "hello.com", 1, PackageVersion("1.0"))
       _ <- Persistence.subscribeToPackagesFullName(
-        EmailAddress("hello@hello.com"),
+        EmailAddress.unsafeFromString("hello@hello.com"),
         NonEmptyList.of(
           (
             FullPackage(name = PackageName("hello"), homepage = "hello.com", anityaId = 1, packageId = 1, currentVersion = PackageVersion("1.0")),
@@ -81,7 +80,7 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
       )
       result <- Persistence.retrieveAllEmailsWithAnityaIdA(1)
     } yield result
-    action.transact(transactor).unsafeRunSync() should be (List(EmailAddress("hello@hello.com")))
+    action.transact(transactor).unsafeRunSync() should be (List(EmailAddress.unsafeFromString("hello@hello.com")))
   }
   it should "succeed in retrieving a package from the suffix of its name" in {
     val action = for {
@@ -98,7 +97,7 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
       _ <- Persistence.initializeDatabase
       _ <- Persistence.upsertPackage("hello", "hello.com", 1, PackageVersion("1.0"))
       _ <- Persistence.subscribeToPackagesFullName(
-        EmailAddress("hello@hello.com"),
+        EmailAddress.unsafeFromString("hello@hello.com"),
         NonEmptyList.of(
           (
             FullPackage(name = PackageName("hello"), homepage = "hello.com", anityaId = 1, packageId = 1, currentVersion = PackageVersion("1.0")),
