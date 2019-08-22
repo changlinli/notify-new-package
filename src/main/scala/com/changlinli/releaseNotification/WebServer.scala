@@ -19,9 +19,9 @@ import org.http4s.circe._
 import org.http4s.client.Client
 import org.http4s.dsl.io._
 import org.http4s.implicits._
+import org.http4s.server.Router
 import org.http4s.server.blaze.BlazeServerBuilder
 
-import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.FiniteDuration
 import scala.language.higherKinds
 
@@ -286,38 +286,6 @@ object WebServer extends CustomLogging {
       .value
   }
 
-  def webActionToPersistenceAction(webAction: WebAction): ConnectionIO[Ior[Error, PersistenceAction]] =
-    webAction match {
-      case subscribeToPackages: SubscribeToPackages =>
-        Persistence.retrievePackages(subscribeToPackages.pkgs)
-          .map{
-            anityaIdToFullPackage =>
-              val anityaIdToFullPackageOpt = subscribeToPackages
-                .pkgs
-                .map(anityaId => anityaId -> anityaIdToFullPackage.get(anityaId))
-              val firstElem = anityaIdToFullPackageOpt.head match {
-                case (_, Some(fullPackage)) =>
-                  Ior.Right(SubscribeToPackagesFullName(subscribeToPackages.email, NonEmptyList.of(fullPackage)))
-                case (anityaId, None) =>
-                  Ior.Left(NoPackagesFoundForAnityaIds(NonEmptyList.of(anityaId)))
-              }
-              anityaIdToFullPackageOpt.tail.foldLeft(firstElem){
-                case (Ior.Both(noPackagesFound, subscribeToPackagesFullName), (_, Some(fullPackage))) =>
-                  Ior.Both(noPackagesFound, subscribeToPackagesFullName.copy(pkgs = fullPackage :: subscribeToPackagesFullName.pkgs))
-                case (Ior.Both(noPackagesFound, subscribeToPackagesFullName), (anityaId, None)) =>
-                  Ior.Both(noPackagesFound.copy(anityaIds = anityaId :: noPackagesFound.anityaIds), subscribeToPackagesFullName)
-                case (Ior.Right(subscribeToPackagesFullName), (_, Some(fullPackage))) =>
-                  Ior.Right(subscribeToPackagesFullName.copy(pkgs = fullPackage :: subscribeToPackagesFullName.pkgs))
-                case (Ior.Right(subscribeToPackagesFullName), (anityaId, None)) =>
-                  Ior.Both(NoPackagesFoundForAnityaIds(NonEmptyList.of(anityaId)), subscribeToPackagesFullName)
-                case (Ior.Left(noPackagesFound), (_, Some(fullPackage))) =>
-                  Ior.Both(noPackagesFound, SubscribeToPackagesFullName(subscribeToPackages.email, NonEmptyList.of(fullPackage)))
-                case (Ior.Left(noPackagesFound), (anityaId, None)) =>
-                  Ior.Left(noPackagesFound.copy(anityaIds = anityaId :: noPackagesFound.anityaIds))
-              }
-          }
-    }
-
   def processInboundWebhook[F[_] : Effect](request: Request[F]): F[EmailAction] = {
     logger.info(s"Processing incoming email: $request")
     request.as[String].flatMap{
@@ -326,6 +294,17 @@ object WebServer extends CustomLogging {
     Effect[F].delay(UnsubscribeEmailFromAllPackages(EmailAddress("hello")))
   }
 
+  def staticRoutes(blocker: Blocker)(implicit contextShift: ContextShift[IO]): HttpRoutes[IO] =
+    HttpRoutes.of[IO]{
+      case request @ GET -> Root =>
+        StaticFile
+          .fromResource("/index.html", blocker, Some(request))
+          .getOrElseF(NotFound("Couldn't find index.html!"))
+      case request @ GET -> Root / "style.css" =>
+        StaticFile
+          .fromResource("/style.css", blocker, Some(request))
+          .getOrElseF(NotFound("Couldn't find style.css!"))
+    }
 
   // If you see a warning here about unreachable code see https://github.com/scala/bug/issues/11457
   def webService(
@@ -336,12 +315,6 @@ object WebServer extends CustomLogging {
     hostPort: Int
   )(implicit contextShift: ContextShift[IO]
   ): HttpRoutes[IO] = HttpRoutes.of[IO]{
-    case request @ GET -> Root =>
-      StaticFile
-        .fromResource("/index.html", blocker, Some(request))
-        .getOrElseF(NotFound("Couldn't find index.html!"))
-    case GET -> Root / "blah" =>
-      Ok("hello blah!")
     case request @ POST -> Root / "submitEmailAddress" =>
       for {
         form <- request.as[UrlForm]
@@ -446,13 +419,18 @@ object WebServer extends CustomLogging {
     transactor: Transactor[IO]
   )(implicit timer: Timer[IO],
     contextShift: ContextShift[IO]
-  ): IO[Unit] =
+  ): IO[Unit] = {
+    val allRoutes = Router(
+      ("", webService(emailSender, blocker, transactor, hostAddress, port)),
+      ("", staticRoutes(blocker))
+    )
     BlazeServerBuilder[IO]
       .bindHttp(port, hostAddress.renderString)
-      .withHttpApp(webService(emailSender, blocker, transactor, hostAddress, port).orNotFound)
+      .withHttpApp(allRoutes.orNotFound)
       .serve
       .compile
       .drain
+  }
 
 
 }

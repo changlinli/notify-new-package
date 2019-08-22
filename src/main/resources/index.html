@@ -2,29 +2,46 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <link rel="stylesheet" type="text/css" href="style.css">
 </head>
 <body>
+<div id="introText">
+  <h2>Notify New Package: Get an email when a new version of a piece of software appears!</h2>
+  <p>Are you a software developer who wants to know when your compiler or another dependency has a new version? </p>
+  <p>Are you a package maintainer that wants to keep track of when an upstream project has published a new version?</p>
+  <p>Do you just want to know when a new version for some piece of software has been released?</p>
+  <p>This is for you! Just search for the packages you care about, enter your email address, and hit submit!</p>
+  <p>That's it! No need to sign up for a user account, no additional pages to navigate through, no nonsense. And of course, you can unsubscribe (and remove your email) at any time.</p>
+  <p>We're built on top of Fedora's <a href="https://release-monitoring.org">release-monitoring.org</a>, but try to cut down user friction to a minimum.</p>
+</div>
+<div id="searchContainer">
 <div>
-  <label for="packageName">Package Name:</label>
-  <input type="text" id="packageName" name="packages" placeholder="rust">
+  <label for="packageName" class="formQuestion">Search for a package name:</label>
+  <input type="text" id="packageName" name="packages" placeholder="scala">
 </div>
 <form action="/submitEmailAddress" method="post">
   <div id="packagesForSubscriptionFormElems">
   </div>
-  <div id="searchResults">
-  </div>
   <div>
-    <label for="emailAddress">Email Address:</label>
+    <label for="emailAddress" class="formQuestion">Email Address:</label>
     <input type="email" id="emailAddress" name="emailAddress" placeholder="user@example.com">
   </div>
   <div>
-    <button type="submit">Submit your subscription preferences!</button>
+    <h3>Packages you will subscribe to upon hitting submit:</h3>
+    <ul id="packagesToSubscribeToDiv">
+    </ul>
+    <ul id="packagesToUnsubscribeFromDiv">
+    </ul>
+  </div>
+  <div>
+    <button type="submit">Subscribe to email updates about these packages!</button>
   </div>
 </form>
-<ul id="packagesToSubscribeToDiv">
-</ul>
-<ul id="packagesToUnsubscribeFromDiv">
-</ul>
+</div>
+<div id="searchResultsContainer">
+  <h3>Package Search Results</h3>
+  <div id="searchResults"></div>
+</div>
 </body>
 <script>
     const input = document.getElementById('packageName');
@@ -99,9 +116,6 @@
     }
 
     function removePackageFromToSubscribe(resultElem) {
-      console.log(resultElem);
-      console.log(packagesToSubscribeTo);
-      console.log(packagesToSubscribeTo.delete(resultElem.anityaId));
       createListOfSubscriptions();
     }
 
@@ -146,7 +160,6 @@
         newList.id = "searchResultsList";
         results.forEach(function(element) {
           const listElement = document.createElement('li');
-          console.log(element);
           const listElementContents = createListElementFromSearchResult(element);
           listElement.appendChild(listElementContents);
           listElement.appendChild(createSubscribeButton(element));
@@ -166,7 +179,6 @@
 
       httpRequest.onreadystatechange = function () {
         if (httpRequest.readyState === XMLHttpRequest.DONE) {
-          console.log(JSON.parse(httpRequest.responseText));
           updateSearchResults(JSON.parse(httpRequest.responseText));
         }
       }
@@ -174,10 +186,37 @@
       httpRequest.send();
     }
 
+    function debounceFunctionCall(func, delayInMs, maxConsecutiveUses) {
+      let remainingUses = maxConsecutiveUses;
+      let storedFunctionCall = null;
+      let debouncedFunction = function() {
+        if (remainingUses > 0) {
+          remainingUses = remainingUses - 1;
+          console.log(remainingUses);
+          function reincrement() {
+            if (!storedFunctionCall) {
+              remainingUses = remainingUses + 1;
+            } else {
+              storedFunctionCall();
+              storedFunctionCall = null;
+              remainingUses = remainingUses + 1;
+            }
+          }
+          window.setTimeout(reincrement, delayInMs);
+          func();
+        } else {
+          storedFunctionCall = func;
+        }
+      };
+      return debouncedFunction;
+    }
+
     function sendStringToSearch(event) {
       makeSearchRequest(input.value);
     }
 
-    input.onkeyup = sendStringToSearch;
+    let onkeyupListener = debounceFunctionCall(function () {sendStringToSearch(event)}, 1000, 1);
+
+    input.onkeyup = onkeyupListener;
 </script>
 </html>
