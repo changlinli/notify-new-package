@@ -198,7 +198,7 @@ object Main extends MyIOApp with Logging {
           case RecreatePackageDatabaseFromBulkDownload => processAnityaInBackground.start
           case DoNotBulkDownloadPackageDatabase => IO.unit.start
         }
-        webServerFiber <- WebServer.runWebServer(emailSender, cmdLineOpts.portNumber, cmdLineOpts.bindAddress, blocker, doobieTransactor).start
+        webServerFiber <- WebServer.runWebServer(emailSender, cmdLineOpts.portNumber, cmdLineOpts.bindAddress, blocker, doobieTransactor, cmdLineOpts.adminEmailRedirect).start
         stream = fs2.io.stdin[IO](1, blocker).evalMap{
           b =>
             if (b == 's'.toByte) {

@@ -70,7 +70,7 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
     } yield result
     action.transact(transactor).unsafeRunSync() should be (List.empty)
   }
-  it should "succeed in retrieving all email addresses subscribed to a to a dummy package" in {
+  it should "succeed in retrieving all email addresses subscribed to a dummy package" in {
     val action = for {
       _ <- Persistence.initializeDatabase
       _ <- Persistence.upsertPackage("hello", "hello.com", 1, PackageVersion("1.0"))
@@ -85,6 +85,7 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
         Instant.EPOCH,
         ConfirmationCode.unsafeFromString("confirm")
       )
+      _ <- Persistence.confirmSubscription(ConfirmationCode.unsafeFromString("confirm"), Instant.EPOCH)
       result <- Persistence.retrieveAllEmailsWithAnityaId(1)
     } yield result
     action.transact(transactor).unsafeRunSync() should be (List(EmailAddress.unsafeFromString("hello@hello.com")))

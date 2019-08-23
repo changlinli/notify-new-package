@@ -2,6 +2,7 @@ package com.changlinli.releaseNotification
 
 import cats.effect.{Effect, IO}
 import cats.implicits._
+import com.changlinli.releaseNotification.data.EmailAddress
 import org.http4s.Uri
 import org.http4s.Uri.{Host, Ipv4Address, Ipv6Address, RegName}
 import org.http4s.syntax.all._
@@ -22,12 +23,33 @@ final case class ServiceConfiguration(
   databaseCreationOpt: DatabaseCreationOption = PreexistingDatabase,
   bindAddress: Host = Ipv4Address.unsafeFromString("127.0.0.1"),
   anityaUrl: Uri = uri"https://release-monitoring.org",
-  rebuildPackageDatabase: PackageDatabaseOption = DoNotBulkDownloadPackageDatabase
+  rebuildPackageDatabase: PackageDatabaseOption = DoNotBulkDownloadPackageDatabase,
+  adminEmailRedirect: EmailAddress = EmailAddress.unsafeFromString("example@example.com")
 )
 
 object ServiceConfiguration {
   val cmdLineOptionParser: OptionParser[ServiceConfiguration] = new scopt.OptionParser[ServiceConfiguration]("notify-new-package") {
     head("notify-new-package", "0.0.1")
+
+    opt[Unit]('b', "build-package-database").action{
+      (_, config) => config.copy(rebuildPackageDatabase = RecreatePackageDatabaseFromBulkDownload)
+    }
+
+    opt[String]('e', "admin-email-address").required()
+      .validate{
+        adminEmailAddress => EmailAddress.fromString(adminEmailAddress) match {
+          case None =>
+            failure(s"The argument passed as an email address ($adminEmailAddress) does not seem to be a valid email address.")
+          case Some(_) =>
+            success
+        }
+      }
+      .action{
+        (adminEmailAddress, config) =>
+          // We can use unsafeFromString because we already checked fromString
+          // previously. Yes Scopt is annoying.
+          config.copy(adminEmailRedirect = EmailAddress.unsafeFromString(adminEmailAddress))
+      }
 
     opt[String]('f', "filename").action{
       (filenameStr, config) => config.copy(databaseFile = filenameStr)

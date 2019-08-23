@@ -314,6 +314,13 @@ object WebServer extends CustomLogging {
       .value
   }
 
+  def redirectIncomingEmail(emailSender: EmailSender, adminEmailAddress: EmailAddress, request: Request[IO]): IO[Unit] = {
+    logger.info(s"Processing incoming email: $request")
+    request.as[String].flatMap{
+      emailToAdmin(emailSender, adminEmailAddress, _)
+    }
+  }
+
   def processInboundWebhook[F[_] : Effect](request: Request[F]): F[EmailAction] = {
     logger.info(s"Processing incoming email: $request")
     request.as[String].flatMap{
@@ -340,7 +347,8 @@ object WebServer extends CustomLogging {
     blocker: Blocker,
     transactor: Transactor[IO],
     hostAddress: Host,
-    hostPort: Int
+    hostPort: Int,
+    adminEmailAddress: EmailAddress
   )(implicit contextShift: ContextShift[IO]
   ): HttpRoutes[IO] = HttpRoutes.of[IO]{
     case request @ POST -> Root / "submitEmailAddress" =>
@@ -365,12 +373,7 @@ object WebServer extends CustomLogging {
     case request @ GET -> Root / "incomingEmail" =>
       Ok(s"Yep this email hook is responding to GET requests! The request headers looked like $request")
     case request @ POST -> Root / "incomingEmail" =>
-      for {
-        action <- processInboundWebhook(request)
-        persistenceAction = emailActionToPersistenceAction(action)
-        _ <- Persistence.processAction(persistenceAction, transactor)
-        response <- Ok(s"Processed inbound email with hook: $request!")
-      } yield response
+      redirectIncomingEmail(emailSender, adminEmailAddress, request).>>(Ok(s"Redirected email!"))
     case GET -> Root / subscribePathComponent / code if subscribePathComponent == unsubscribePath =>
       val unsubscribeCode = UnsubscribeCode.unsafeFromString(code)
       Persistence
@@ -443,7 +446,7 @@ object WebServer extends CustomLogging {
               val fullAction = emailAction.>>(httpResponse)
               OptionT.liftF(fullAction)
           }
-          .getOrElseF(Ok(s"This confirmation code doesn't seem to correspond to any subscriptions: ${confirmationCode}"))
+          .getOrElseF(Ok(s"This confirmation code doesn't seem to correspond to any subscriptions: $confirmationCode"))
       } yield response
     case GET -> Root / "search" :? SearchQueryMatcher(nameFragment) =>
       Persistence
@@ -511,14 +514,28 @@ object WebServer extends CustomLogging {
          |
          |If this was you, please confirm by opening this page in your web browser: ${confirmationCode.generateConfirmationUri(hostAddress, hostPort).renderString}
          |
+         |If that was not you, you can either ignore this email, or send an email to admin@${hostAddress.renderString} if you'd like us to look into someone entering your email address without your permission.
+         |
          |In the future if you'd like to unsubscribe to updates for a particular package, simply entering any of those unsubscribe links into your web browser will do the trick.
          |
          |Ultimately this service is built on top of Fedora's Anitya project (release-monitoring.org), so we've included a link to the release-monitoring.org page for this package.
        """.stripMargin
     emailSender.email(
       to = emailAddress,
-      subject = s"Signed up for notifications about ${packages.map(_._1.name.str).mkString(",")}",
+      subject = s"Request to sign you up for notifications about ${packages.map(_._1.name.str).mkString(",")}",
       content = content
+    )
+  }
+
+  private def emailToAdmin(
+    emailSender: EmailSender,
+    adminEmailAddress: EmailAddress,
+    body: String
+  ): IO[Unit] = {
+    emailSender.email(
+      to = adminEmailAddress,
+      subject = s"Received an inbound email from Sendgrid",
+      content = s"The body of the incoming email was as follows:\n$body"
     )
   }
 
@@ -567,7 +584,7 @@ object WebServer extends CustomLogging {
        """.stripMargin
     emailSender.email(
       to = emailAddress,
-      subject = s"Unsubscribed from version updates for ${unsubscribedPackage.name}",
+      subject = s"Unsubscribed from version updates for ${unsubscribedPackage.name.str}",
       content = content
     )
   }
@@ -585,12 +602,13 @@ object WebServer extends CustomLogging {
     port: Int,
     hostAddress: Host,
     blocker: Blocker,
-    transactor: Transactor[IO]
+    transactor: Transactor[IO],
+    adminEmailAddress: EmailAddress
   )(implicit timer: Timer[IO],
     contextShift: ContextShift[IO]
   ): IO[Unit] = {
     val allRoutes = Router(
-      ("", webService(emailSender, blocker, transactor, hostAddress, port)),
+      ("", webService(emailSender, blocker, transactor, hostAddress, port, adminEmailAddress)),
       ("", staticRoutes(blocker))
     )
     BlazeServerBuilder[IO]
