@@ -1,11 +1,49 @@
 package com.changlinli.releaseNotification
 
 import cats.data.NonEmptyList
-import com.changlinli.releaseNotification.data.{FullPackage, UnsubscribeCode}
+import com.changlinli.releaseNotification.data.{ConfirmationCode, FullPackage, UnsubscribeCode}
 import scalatags.Text
 import scalatags.Text.all._
 
 object HtmlGenerators {
+
+  def queryUserAboutSubscribeConfirmation(packages: NonEmptyList[FullPackage], confirmationCode: ConfirmationCode): Text.TypedTag[String] = {
+    html(
+      head(
+        meta(charset := "utf-8"),
+        link(rel := "stylesheet", tpe := "text/css", href := "style.css")
+      ),
+      body(
+        div(
+          "Are you sure you want to subscribe to version updates concerning the following packages? If not feel, feel free to navigate to any other page.",
+          formatAllPackages(packages.toList),
+          form(
+            action := s"/${WebServer.confirmationPath}/${confirmationCode.str}",
+            method := "post",
+            input(
+              tpe := "submit",
+              value := "Yes I want to subscribe!"
+            )
+          )
+        )
+      )
+    )
+  }
+
+  def subscribeConfirmation(packages: NonEmptyList[FullPackage]): Text.TypedTag[String] = {
+    html(
+      head(
+        meta(charset := "utf-8"),
+        link(rel := "stylesheet", tpe := "text/css", href := "style.css")
+      ),
+      body(
+        div(
+          "You've successfully subscribed to version updates concerning the following packages (you'll be getting an email about this too).",
+          formatAllPackages(packages.toList)
+        )
+      )
+    )
+  }
 
   def unsubscribePage(
     packageToBeUnsubscribedFrom: FullPackage,
@@ -60,7 +98,7 @@ object HtmlGenerators {
         s"Anitya ID: ${pkg.anityaId}"
       ),
       li(
-        s"Current Version: ${pkg.currentVersion}"
+        s"Current Version: ${pkg.currentVersion.str}"
       )
     )
   }
@@ -72,7 +110,7 @@ object HtmlGenerators {
     ul(listItems: _*)
   }
 
-  def successfullySubmittedFrom(packages: List[FullPackage]): Text.TypedTag[String] = {
+  def successfullySubmittedFrom(packages: NonEmptyList[FullPackage]): Text.TypedTag[String] = {
     html(
       head(
         meta(charset := "utf-8"),
@@ -81,7 +119,7 @@ object HtmlGenerators {
       body(
         div(
           "You've submitted a request to subscribe to the following packages:",
-          formatAllPackages(packages)
+          formatAllPackages(packages.toList)
         )
       )
     )

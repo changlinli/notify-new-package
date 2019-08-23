@@ -1,5 +1,7 @@
 package com.changlinli.releaseNotification.data
 
+import cats.Order
+
 sealed abstract case class EmailAddress (str: String)
 
 object EmailAddress {
@@ -37,5 +39,11 @@ object EmailAddress {
     } else {
       None
     }
+  }
+
+  implicit val emailAddressIsOrdered: Order[EmailAddress] = new Order[EmailAddress] {
+    import cats.implicits._
+    override def compare(x: EmailAddress, y: EmailAddress): Int =
+      Order[String].compare(x.str, y.str)
   }
 }

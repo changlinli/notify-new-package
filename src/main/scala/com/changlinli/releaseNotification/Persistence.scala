@@ -130,8 +130,32 @@ object Persistence extends CustomLogging {
       .updateWithLogHandler(doobieLogHandler)
   }
 
-  def confirmSubscription(confirmationCode: ConfirmationCode, currentTime: Instant): doobie.ConnectionIO[Int] = {
-    confirmSubscriptionQuery(confirmationCode, currentTime).run
+  def retrieveRelevantSubscriptionInfo(confirmationCode: ConfirmationCode): doobie.ConnectionIO[List[(FullPackage, UnsubscribeCode, EmailAddress)]] = {
+    sql"""SELECT packages.id, packages.name, packages.homepage, packages.anityaId, packages.currentVersion, unsubscribeCodes.code, emails.emailAddress
+         |FROM subscriptions
+         |INNER JOIN packages ON packages.id = subscriptions.packageId
+         |INNER JOIN unsubscribeCodes ON unsubscribeCodes.subscriptionId = subscriptions.id
+         |INNER JOIN emails ON emails.id = subscriptions.emailId
+         |WHERE subscriptions.confirmationCode = ${confirmationCode.str}"""
+      .stripMargin
+      .queryWithLogHandler[(Int, String, String, Int, String, String, String)](doobieLogHandler)
+      .map{case (packageId, packageName, homepage, anityaId, currentVersion, unsubscribeCode, emailAddress) =>
+        // We use unsafe conversions here because we assume that things were stored correctly in the DB
+        (
+          FullPackage(PackageName(packageName), homepage, anityaId, packageId, PackageVersion(currentVersion)),
+          UnsubscribeCode.unsafeFromString(unsubscribeCode),
+          EmailAddress.unsafeFromString(emailAddress)
+        )
+      }
+      .to[List]
+  }
+
+  def confirmSubscription(confirmationCode: ConfirmationCode, currentTime: Instant): doobie.ConnectionIO[List[(FullPackage, UnsubscribeCode, EmailAddress)]] = {
+    val retrieveRelevantInfo = retrieveRelevantSubscriptionInfo(confirmationCode)
+    for {
+      info <- retrieveRelevantInfo
+      _ <- confirmSubscriptionQuery(confirmationCode, currentTime).run
+    } yield info
   }
 
   def retrievePackageAssociatedWithSubscriptionId(subscriptionId: SubscriptionId): ConnectionIO[Option[FullPackage]] = {
@@ -420,6 +444,7 @@ object Persistence extends CustomLogging {
     sql"""DELETE FROM subscriptions WHERE id IN
          |  (SELECT subscriptions.id FROM emails INNER JOIN subscriptions ON emails.id = subscriptions.emailId WHERE emailAddress=${email.str}))
          |AND packageId IN (SELECT id FROM packages WHERE name = ${packageName.str})"""
+      .stripMargin
       .update
       .run
   }
@@ -447,29 +472,36 @@ object Persistence extends CustomLogging {
     Transactor.fromDataSource[IO](dataSource, connectionEC, blocker)
   }
 
-  val retrieveAllEmailsSubscribedToAllA: ConnectionIO[List[EmailAddress]] =
-    sql"""SELECT emailAddress FROM subscriptions INNER JOIN emails ON emails.id = subscriptions.emailId WHERE specialType='ALL'"""
+  val retrieveAllEmailsSubscribedToAllCIO: ConnectionIO[List[EmailAddress]] =
+    sql"""SELECT emailAddress FROM subscriptions
+         |INNER JOIN emails ON emails.id = subscriptions.emailId
+         |WHERE specialType='ALL' AND subscriptions.confirmedTime IS NOT NULL"""
+      .stripMargin
       .query[String]
       // We assume if the email address is in the database it's a valid string
       .map(EmailAddress.unsafeFromString)
       .to[List]
 
-  def retrieveAllEmailsSubscribedToAll(transactor: Transactor[IO])(implicit contextShift: ContextShift[IO]): IO[List[EmailAddress]] =
-    retrieveAllEmailsSubscribedToAllA.transact(transactor)
+  def retrieveAllEmailsSubscribedToAllFullIO(transactor: Transactor[IO])(implicit contextShift: ContextShift[IO]): IO[List[EmailAddress]] =
+    retrieveAllEmailsSubscribedToAllCIO.transact(transactor)
 
-  def retrieveAllEmailsWithAnityaIdA(anityaId: Int): ConnectionIO[List[EmailAddress]] =
-    sql"""SELECT emailAddress FROM subscriptions INNER JOIN emails ON emails.id = subscriptions.emailId INNER JOIN packages ON packages.id = subscriptions.packageId WHERE packages.anityaId=$anityaId"""
+  def retrieveAllEmailsWithAnityaId(anityaId: Int): ConnectionIO[List[EmailAddress]] =
+    sql"""SELECT emailAddress FROM subscriptions
+         |INNER JOIN emails ON emails.id = subscriptions.emailId
+         |INNER JOIN packages ON packages.id = subscriptions.packageId
+         |WHERE packages.anityaId=$anityaId AND subscriptions.confirmedTime IS NOT NULL"""
+      .stripMargin
       .query[String]
       // We assume if the email address is in the database it's a valid string
       .map(EmailAddress.unsafeFromString)
       .to[List]
 
-  def retrieveAllEmailsWithAnityaId(
+  def retrieveAllEmailsWithAnityaIdIO(
     transactor: Transactor[IO],
     anityaId: Int)(
     implicit contextShift: ContextShift[IO]
   ): IO[List[EmailAddress]] =
-    retrieveAllEmailsWithAnityaIdA(anityaId).transact(transactor)
+    retrieveAllEmailsWithAnityaId(anityaId).transact(transactor)
 
   def insertIntoDB(name: String, packageName: String)(implicit contextShift: ContextShift[IO]): ConnectionIO[Int] =
     sql"""INSERT INTO subscriptions (email, packageName) values ($name, $packageName)""".update.run

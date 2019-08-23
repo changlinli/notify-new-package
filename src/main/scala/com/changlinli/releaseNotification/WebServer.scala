@@ -249,32 +249,37 @@ object WebServer extends CustomLogging {
 
   def processDatabaseResponse(
     email: EmailAddress,
-    resultOfSubscribe: Ior[NoPackagesFoundForAnityaIds, NonEmptyList[(FullPackage, UnsubscribeCode)]],
+    resultOfSubscribe: Ior[NoPackagesFoundForAnityaIds, (NonEmptyList[(FullPackage, UnsubscribeCode)], ConfirmationCode)],
     emailSender: EmailSender,
     hostAddress: Host,
     hostPort: Int
   ): IO[Response[IO]] = {
     resultOfSubscribe match {
-      case Ior.Both(err @ NoPackagesFoundForAnityaIds(anityaIds), pkgsWithUnsubscribeCodes) =>
-        val emailAction = emailSuccessfullySubscribedPackages(
+      case Ior.Both(err @ NoPackagesFoundForAnityaIds(anityaIds), (pkgsWithUnsubscribeCodes, confirmationCode)) =>
+        val emailAction = emailSubscriptionConfirmationRequest(
           emailSender,
           email,
           pkgsWithUnsubscribeCodes,
+          confirmationCode,
           hostAddress,
           hostPort
         )
-        emailAction.>>(Ok(HtmlGenerators.successfullySubmittedFrom(pkgsWithUnsubscribeCodes.map(_._1).toList)))
+        IO(logger.warn(err))
+          .>>(emailAction)
+          .>>(Ok(HtmlGenerators.successfullySubmittedFrom(pkgsWithUnsubscribeCodes.map(_._1))))
       case Ior.Left(err) =>
         logger.info(s"User sent in request that failed", err)
         BadRequest(s"You failed! ${err.humanReadableMessage}")
-      case Ior.Right(pkgsWithUnsubscribeCodes) =>
-        emailSuccessfullySubscribedPackages(
+      case Ior.Right((pkgsWithUnsubscribeCodes, confirmationCode)) =>
+        val emailAction = emailSubscriptionConfirmationRequest(
           emailSender,
           email,
           pkgsWithUnsubscribeCodes,
+          confirmationCode,
           hostAddress,
           hostPort
-        ).>>(Ok(HtmlGenerators.successfullySubmittedFrom(pkgsWithUnsubscribeCodes.map(_._1).toList)))
+        )
+        emailAction.>>(Ok(HtmlGenerators.successfullySubmittedFrom(pkgsWithUnsubscribeCodes.map(_._1))))
     }
   }
 
@@ -283,7 +288,7 @@ object WebServer extends CustomLogging {
     anityaIdsWithUnsubscribeCodes: NonEmptyList[(AnityaId, UnsubscribeCode)],
     currentTime: Instant,
     confirmationCode: ConfirmationCode
-  ): ConnectionIO[Ior[NoPackagesFoundForAnityaIds, NonEmptyList[(FullPackage, UnsubscribeCode)]]] = {
+  ): ConnectionIO[Ior[NoPackagesFoundForAnityaIds, (NonEmptyList[(FullPackage, UnsubscribeCode)], ConfirmationCode)]] = {
     val unsubscribeCodes = anityaIdsWithUnsubscribeCodes.map(_._2)
     val getFullPackages = getFullPackagesFromSubscribeToPackages(
       email,
@@ -305,6 +310,7 @@ object WebServer extends CustomLogging {
             .right[NoPackagesFoundForAnityaIds](subscription)
             .as(pkgsWithCode)
       }
+      .map((_, confirmationCode))
       .value
   }
 
@@ -375,7 +381,7 @@ object WebServer extends CustomLogging {
           case Some(htmlPage) => Ok(htmlPage)
           case None => Ok(s"There doesn't seem to be a package associated with the unsubscribe code ${unsubscribeCode.str}")
         }
-    case POST -> Root / subscribePathComponent / code if subscribePathComponent == unsubscribePath =>
+    case POST -> Root / unsubscribePathComponent / code if unsubscribePathComponent == unsubscribePath =>
       Persistence
         .unsubscribeUsingCode(UnsubscribeCode.unsafeFromString(code))
         .transact(transactor)
@@ -398,19 +404,46 @@ object WebServer extends CustomLogging {
             } yield response
         }
         .getOrElseF(Ok(s"There doesn't seem to be a package associated with the unsubscribe code $code..."))
-    case POST -> Root / "confirm" / confirmationCode =>
+    case GET -> Root / confirmationPathComponent / confirmationCode if confirmationPathComponent == confirmationPath =>
+      val fullConfirmationCode = ConfirmationCode.unsafeFromString(confirmationCode)
+      Persistence
+        .retrieveRelevantSubscriptionInfo(fullConfirmationCode)
+        .transact(transactor)
+        .map(NonEmptyList.fromList)
+        .|>(OptionT.apply)
+        .map(_.map(_._1))
+        .flatMap{
+          pkgs =>
+            OptionT.liftF(Ok(HtmlGenerators.queryUserAboutSubscribeConfirmation(pkgs, fullConfirmationCode)))
+        }
+        .getOrElseF(Ok(s"We didn't find any packages for the confirmation code $confirmationCode"))
+    case POST -> Root / confirmationPathComponent / confirmationCode if confirmationPathComponent == confirmationPath =>
       val fullConfirmationCode = ConfirmationCode.unsafeFromString(confirmationCode)
       for {
         currentTime <- IO(Instant.now())
         response <- Persistence
           .confirmSubscription(fullConfirmationCode, currentTime)
           .transact(transactor)
+          .map(NonEmptyList.fromList)
+          .|>(OptionT.apply)
           .flatMap{
-            numOfUpdates => Ok(
-              s"You've confirmed this many packages! $numOfUpdates. You should be " +
-                s"getting an email soon with a response of this confirmation."
-            )
+            pkgsUnsubscribeCodeAndEmailAddress =>
+              val emailToPkgs = pkgsUnsubscribeCodeAndEmailAddress
+                .groupBy{case (_, _, email) => email}
+                .view
+                .mapValues(_.map{case (pkg, code, _) => (pkg, code)})
+                .toList
+              if (emailToPkgs.length > 1)
+                logger.warn(s"We only expected a unique email address to come back here, but we got more than one: $emailToPkgs")
+              val emailAction = emailToPkgs.traverse_{
+                case (emailAddress, pkgsAndUnsubscribeCodes) =>
+                  emailSuccessfullySubscribedPackages(emailSender, emailAddress, pkgsAndUnsubscribeCodes, hostAddress, hostPort)
+              }
+              val httpResponse = Ok(HtmlGenerators.subscribeConfirmation(pkgsUnsubscribeCodeAndEmailAddress.map(_._1)))
+              val fullAction = emailAction.>>(httpResponse)
+              OptionT.liftF(fullAction)
           }
+          .getOrElseF(Ok(s"This confirmation code doesn't seem to correspond to any subscriptions: ${confirmationCode}"))
       } yield response
     case GET -> Root / "search" :? SearchQueryMatcher(nameFragment) =>
       Persistence
@@ -418,6 +451,8 @@ object WebServer extends CustomLogging {
         .transact(transactor)
         .flatMap(packages => Ok(packages.asJson))
   }
+
+  val confirmationPath: String = "confirm"
 
   val unsubscribePath: String = "unsubscribe"
 
@@ -459,6 +494,32 @@ object WebServer extends CustomLogging {
        |Current Version: ${pkg.currentVersion.str}
        |release-monitoring.org link (see the bottom of this email): ${releaseMonitoringLink.renderString}
      """.stripMargin
+  }
+
+  private def emailSubscriptionConfirmationRequest(
+    emailSender: EmailSender,
+    emailAddress: EmailAddress,
+    packages: NonEmptyList[(FullPackage, UnsubscribeCode)],
+    confirmationCode: ConfirmationCode,
+    hostAddress: Host,
+    hostPort: Int
+  ): IO[Unit] = {
+    val content =
+      s"""Hi we've received a request to sign you up for email updates for new versions of the following packages:
+         |
+         |${packages.map{case (p, unsubscribeCode) => printPackageWithUnsubscribe(p, unsubscribeCode, hostAddress, hostPort)}.mkString("\n\n")}
+         |
+         |If this was you, please confirm by opening this page in your web browser: ${confirmationCode.generateConfirmationUri(hostAddress, hostPort).renderString}
+         |
+         |In the future if you'd like to unsubscribe to updates for a particular package, simply entering any of those unsubscribe links into your web browser will do the trick.
+         |
+         |Ultimately this service is built on top of Fedora's Anitya project (release-monitoring.org), so we've included a link to the release-monitoring.org page for this package.
+       """.stripMargin
+    emailSender.email(
+      to = emailAddress,
+      subject = s"Signed up for notifications about ${packages.map(_._1.name.str).mkString(",")}",
+      content = content
+    )
   }
 
   private def emailSuccessfullySubscribedPackages(

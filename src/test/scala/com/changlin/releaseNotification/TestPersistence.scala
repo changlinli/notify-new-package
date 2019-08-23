@@ -66,7 +66,7 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
   "The persistence layer" should "succeed in retrieving all email addresses subscribed to all packages and return an empty list of them" in {
     val action = for {
       _ <- Persistence.initializeDatabase
-      result <- Persistence.retrieveAllEmailsSubscribedToAllA
+      result <- Persistence.retrieveAllEmailsSubscribedToAllCIO
     } yield result
     action.transact(transactor).unsafeRunSync() should be (List.empty)
   }
@@ -85,7 +85,7 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
         Instant.EPOCH,
         ConfirmationCode.unsafeFromString("confirm")
       )
-      result <- Persistence.retrieveAllEmailsWithAnityaIdA(1)
+      result <- Persistence.retrieveAllEmailsWithAnityaId(1)
     } yield result
     action.transact(transactor).unsafeRunSync() should be (List(EmailAddress.unsafeFromString("hello@hello.com")))
   }

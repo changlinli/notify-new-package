@@ -42,9 +42,9 @@ object RabbitMQListener extends CustomLogging {
               AnityaId(value.anityaId),
               PackageVersion(value.packageVersion)
             ).transact(doobieTransactor)
-            emailAddresses <- Persistence.retrieveAllEmailsWithAnityaId(doobieTransactor, value.anityaId)
+            emailAddresses <- Persistence.retrieveAllEmailsWithAnityaIdIO(doobieTransactor, value.anityaId)
             _ <- IO(s"All email addresses subscribed to ${value.packageName}: $emailAddresses")
-            emailAddressesSubscribedToAllUpdates <- Persistence.retrieveAllEmailsSubscribedToAll(doobieTransactor)
+            emailAddressesSubscribedToAllUpdates <- Persistence.retrieveAllEmailsSubscribedToAllFullIO(doobieTransactor)
             _ <- IO(s"All email addresses subscribed to ALL: $emailAddressesSubscribedToAllUpdates")
             _ <- (emailAddressesSubscribedToAllUpdates ++ emailAddresses).traverse{ emailAddress =>
               logger.info(s"Emailing out an update of ${value.packageName} to $emailAddress")
