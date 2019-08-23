@@ -1,10 +1,52 @@
 package com.changlinli.releaseNotification
 
-import com.changlinli.releaseNotification.data.FullPackage
+import cats.data.NonEmptyList
+import com.changlinli.releaseNotification.data.{FullPackage, UnsubscribeCode}
 import scalatags.Text
 import scalatags.Text.all._
 
 object HtmlGenerators {
+
+  def unsubscribePage(
+    packageToBeUnsubscribedFrom: FullPackage,
+    unsubscribeCode: UnsubscribeCode
+  ): Text.TypedTag[String] = {
+    html(
+      head(
+        meta(charset := "utf-8"),
+        link(rel := "stylesheet", tpe := "text/css", href := "style.css")
+      ),
+      body(
+        div(
+          "Are you sure you want to unsubscribe to the following package? If not feel free to navigate to any other page.",
+          formatSinglePackage(packageToBeUnsubscribedFrom)
+        ),
+        form(
+          action := s"/${WebServer.unsubscribePath}/${unsubscribeCode.str}",
+          method := "post",
+          input(
+            tpe := "submit",
+            value := "Yes I want to unsubscribe!"
+          )
+        )
+      )
+    )
+  }
+
+  def unsubcribeConfirmation(packageUnsubscribedFrom: FullPackage): Text.TypedTag[String] = {
+    html(
+      head(
+        meta(charset := "utf-8"),
+        link(rel := "stylesheet", tpe := "text/css", href := "style.css")
+      ),
+      body(
+        div(
+          "You've successfully unsubscribed from the following package (you'll be getting an email about this too).",
+          formatSinglePackage(packageUnsubscribedFrom)
+        )
+      )
+    )
+  }
 
   private def formatSinglePackage(pkg: FullPackage): Text.TypedTag[String] = {
     ul(
@@ -23,7 +65,7 @@ object HtmlGenerators {
     )
   }
 
-  private def formatAllPackages(pkgs: List[FullPackage]) = {
+  private def formatAllPackages(pkgs: List[FullPackage]): Text.TypedTag[String] = {
     val listItems = pkgs.map(
       pkg => li(formatSinglePackage(pkg))
     )

@@ -1,5 +1,5 @@
 package com.changlinli.releaseNotification
 
-object CmdLineOptionParser {
+object GarbageDataCollection {
 
 }

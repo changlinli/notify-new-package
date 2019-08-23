@@ -8,7 +8,7 @@ import org.http4s.Uri
 import org.http4s.Uri.{Authority, Host}
 
 sealed abstract case class UnsubscribeCode(str: String) {
-  def formUnsubscribeUri(hostAddress: Host, hostPort: Int): Uri = {
+  def generateUnsubscribeUri(hostAddress: Host, hostPort: Int): Uri = {
     // If we have port 80 we drop it from the URL we're creating because it's
     // unnecessary for web browsers
     val hostPortOpt = if (hostPort == 80) None else Some(hostPort)

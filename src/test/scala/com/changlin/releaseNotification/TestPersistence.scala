@@ -1,11 +1,12 @@
 package com.changlin.releaseNotification
 
+import java.time.Instant
 import java.util.concurrent.Executors
 
 import cats.data.NonEmptyList
 import cats.effect.{Blocker, ContextShift, IO}
 import com.changlinli.releaseNotification.Persistence
-import com.changlinli.releaseNotification.data.{EmailAddress, FullPackage, PackageName, PackageVersion, UnsubscribeCode}
+import com.changlinli.releaseNotification.data.{ConfirmationCode, EmailAddress, FullPackage, PackageName, PackageVersion, UnsubscribeCode}
 import com.changlinli.releaseNotification.ids.SubscriptionId
 import doobie.implicits._
 import doobie.scalatest.IOChecker
@@ -36,7 +37,9 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
             FullPackage(name = PackageName("hello"), homepage = "hello.com", anityaId = 1, packageId = 1, currentVersion = PackageVersion("1.0")),
             UnsubscribeCode.unsafeFromString("unsubscribeString")
           )
-        )
+        ),
+        Instant.EPOCH,
+        ConfirmationCode.unsafeFromString("confirm")
       )
     } yield ()
     an [SQLiteException] should be thrownBy action.transact(transactor).unsafeRunSync()
@@ -52,7 +55,9 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
             FullPackage(name = PackageName("hello"), homepage = "hello.com", anityaId = 1, packageId = 1, currentVersion = PackageVersion("1.0")),
             UnsubscribeCode.unsafeFromString("unsubscribeString")
           )
-        )
+        ),
+        Instant.EPOCH,
+        ConfirmationCode.unsafeFromString("confirm")
       )
     } yield ()
     action.transact(transactor).unsafeRunSync()
@@ -76,7 +81,9 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
             FullPackage(name = PackageName("hello"), homepage = "hello.com", anityaId = 1, packageId = 1, currentVersion = PackageVersion("1.0")),
             UnsubscribeCode.unsafeFromString("unsubscribeString")
           )
-        )
+        ),
+        Instant.EPOCH,
+        ConfirmationCode.unsafeFromString("confirm")
       )
       result <- Persistence.retrieveAllEmailsWithAnityaIdA(1)
     } yield result
@@ -103,7 +110,9 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
             FullPackage(name = PackageName("hello"), homepage = "hello.com", anityaId = 1, packageId = 1, currentVersion = PackageVersion("1.0")),
             UnsubscribeCode.unsafeFromString("unsubscribeString")
           )
-        )
+        ),
+        Instant.EPOCH,
+        ConfirmationCode.unsafeFromString("confirm")
       )
       unsubscribeCodeOpt <- Persistence.getUnsubscribeCodeForSubscription(SubscriptionId(1))
     } yield unsubscribeCodeOpt

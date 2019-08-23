@@ -1,12 +1,13 @@
 package com.changlinli.releaseNotification
 
+import java.time.Instant
 import java.util.concurrent.TimeUnit
 
-import cats.data.{EitherT, Ior, IorT, NonEmptyList}
+import cats.data.{EitherT, Ior, IorT, NonEmptyList, OptionT}
 import cats.effect.{Blocker, ContextShift, Effect, IO, Timer}
 import cats.implicits._
 import cats.kernel.Semigroup
-import com.changlinli.releaseNotification.data.{EmailAddress, FullPackage, PackageName, UnsubscribeCode}
+import com.changlinli.releaseNotification.data.{ConfirmationCode, EmailAddress, FullPackage, PackageName, UnsubscribeCode}
 import com.changlinli.releaseNotification.ids.{AnityaId, SubscriptionId}
 import doobie.free.connection.ConnectionIO
 import doobie.implicits._
@@ -279,7 +280,9 @@ object WebServer extends CustomLogging {
 
   def fullySubscribeToPackages(
     email: EmailAddress,
-    anityaIdsWithUnsubscribeCodes: NonEmptyList[(AnityaId, UnsubscribeCode)]
+    anityaIdsWithUnsubscribeCodes: NonEmptyList[(AnityaId, UnsubscribeCode)],
+    currentTime: Instant,
+    confirmationCode: ConfirmationCode
   ): ConnectionIO[Ior[NoPackagesFoundForAnityaIds, NonEmptyList[(FullPackage, UnsubscribeCode)]]] = {
     val unsubscribeCodes = anityaIdsWithUnsubscribeCodes.map(_._2)
     val getFullPackages = getFullPackagesFromSubscribeToPackages(
@@ -292,7 +295,14 @@ object WebServer extends CustomLogging {
       .map(fullPackages => fullPackages.zipWith(unsubscribeCodes)((_, _)))
       .flatMap{
         pkgsWithCode =>
-          IorT.right[NoPackagesFoundForAnityaIds](Persistence.subscribeToPackagesFullName(email, pkgsWithCode))
+          val subscription = Persistence.subscribeToPackagesFullName(
+            email,
+            pkgsWithCode,
+            currentTime,
+            confirmationCode
+          )
+          IorT
+            .right[NoPackagesFoundForAnityaIds](subscription)
             .as(pkgsWithCode)
       }
       .value
@@ -338,7 +348,9 @@ object WebServer extends CustomLogging {
             for {
               _ <- infoIO(s"Persisting the following subscription: $incomingSubscription")
               packagesWithAnityaIds <- zipAnityaIdsWithUnsubscribeCodes(incomingSubscription.pkgs)
-              resultOfSubscription <- fullySubscribeToPackages(incomingSubscription.email, packagesWithAnityaIds)
+              currentTime <- IO(Instant.now())
+              confirmationCode <- ConfirmationCode.generateConfirmationCode
+              resultOfSubscription <- fullySubscribeToPackages(incomingSubscription.email, packagesWithAnityaIds, currentTime, confirmationCode)
                 .transact(transactor)
               response <- processDatabaseResponse(incomingSubscription.email, resultOfSubscription, emailSender, hostAddress, hostPort)
             } yield response
@@ -354,10 +366,52 @@ object WebServer extends CustomLogging {
         response <- Ok(s"Processed inbound email with hook: $request!")
       } yield response
     case GET -> Root / subscribePathComponent / code if subscribePathComponent == unsubscribePath =>
+      val unsubscribeCode = UnsubscribeCode.unsafeFromString(code)
+      Persistence
+        .retrievePackageAssociatedWithCode(unsubscribeCode)
+        .transact(transactor)
+        .map{packageOpt => packageOpt.map(HtmlGenerators.unsubscribePage(_, unsubscribeCode))}
+        .flatMap{
+          case Some(htmlPage) => Ok(htmlPage)
+          case None => Ok(s"There doesn't seem to be a package associated with the unsubscribe code ${unsubscribeCode.str}")
+        }
+    case POST -> Root / subscribePathComponent / code if subscribePathComponent == unsubscribePath =>
       Persistence
         .unsubscribeUsingCode(UnsubscribeCode.unsafeFromString(code))
         .transact(transactor)
-        .flatMap(numOfPackagesUnsubscribed => Ok(s"Unsubscribed from this many packages: ${numOfPackagesUnsubscribed.toString}"))
+        .|>(OptionT.apply)
+        .flatMap{
+          case (unsubscribedPackage, emailAddress) =>
+            for {
+              _ <- OptionT.liftF(
+                emailSuccessfullyUnsubscribedFromPackage(
+                  emailSender,
+                  emailAddress,
+                  unsubscribedPackage,
+                  hostAddress,
+                  hostPort
+                )
+              )
+              response <- OptionT.liftF(
+                Ok(HtmlGenerators.unsubcribeConfirmation(unsubscribedPackage))
+              )
+            } yield response
+        }
+        .getOrElseF(Ok(s"There doesn't seem to be a package associated with the unsubscribe code $code..."))
+    case POST -> Root / "confirm" / confirmationCode =>
+      val fullConfirmationCode = ConfirmationCode.unsafeFromString(confirmationCode)
+      for {
+        currentTime <- IO(Instant.now())
+        response <- Persistence
+          .confirmSubscription(fullConfirmationCode, currentTime)
+          .transact(transactor)
+          .flatMap{
+            numOfUpdates => Ok(
+              s"You've confirmed this many packages! $numOfUpdates. You should be " +
+                s"getting an email soon with a response of this confirmation."
+            )
+          }
+      } yield response
     case GET -> Root / "search" :? SearchQueryMatcher(nameFragment) =>
       Persistence
         .searchForPackagesByNameFragment(nameFragment)
@@ -369,7 +423,7 @@ object WebServer extends CustomLogging {
 
   object SearchQueryMatcher extends QueryParamDecoderMatcher[String]("name")
 
-  private def printPackage(
+  private def printPackageWithUnsubscribe(
     pkg: FullPackage,
     unsubscribeCode: UnsubscribeCode,
     hostAddress: Host,
@@ -385,7 +439,25 @@ object WebServer extends CustomLogging {
        |Package Homepage: ${pkg.homepage}
        |Current Version: ${pkg.currentVersion.str}
        |release-monitoring.org link (see the bottom of this email): ${releaseMonitoringLink.renderString}
-       |Unsubscribe link (see the bottom of this email): ${unsubscribeCode.formUnsubscribeUri(hostAddress, hostPort).renderString}
+       |Unsubscribe link (see the bottom of this email): ${unsubscribeCode.generateUnsubscribeUri(hostAddress, hostPort).renderString}
+     """.stripMargin
+  }
+
+  private def printPackage(
+    pkg: FullPackage,
+    hostAddress: Host,
+    hostPort: Int
+  ): String = {
+    val releaseMonitoringLink = Uri(
+      scheme = Some(Scheme.https),
+      authority = Some(Authority(host = RegName("release-monitoring.org"))),
+      path = s"/project/${pkg.anityaId}/"
+    )
+    s"""
+       |Package Name: ${pkg.name.str}
+       |Package Homepage: ${pkg.homepage}
+       |Current Version: ${pkg.currentVersion.str}
+       |release-monitoring.org link (see the bottom of this email): ${releaseMonitoringLink.renderString}
      """.stripMargin
   }
 
@@ -402,17 +474,39 @@ object WebServer extends CustomLogging {
          |
          |You will get an email any time one of the following packages gets a new version:
          |
-         |${packages.map{case (p, unsubscribeCode) => printPackage(p, unsubscribeCode, hostAddress, hostPort)}.mkString("\n\n")}
+         |${packages.map{case (p, unsubscribeCode) => printPackageWithUnsubscribe(p, unsubscribeCode, hostAddress, hostPort)}.mkString("\n\n")}
          |
          |If you'd like to unsubscribe to updates for a particular package, simply entering any of those unsubscribe links into your web browser will do the trick.
          |
          |I currently haven't implemented the ability to unsubscribe from all packages at once. If you'd like to do so, please just send an email to admin@${hostAddress.renderString}
          |
-         |The Anitya ID is used to tie a package to its representation in the Fedora backend system that powers this service. Because multiple package names
+         |Ultimately this service is built on top of Fedora's Anitya project (release-monitoring.org), so we've included a link to the release-monitoring.org page for this package.
        """.stripMargin
     emailSender.email(
       to = emailAddress,
       subject = s"Signed up for notifications about ${packages.map(_._1.name.str).mkString(",")}",
+      content = content
+    )
+  }
+
+  private def emailSuccessfullyUnsubscribedFromPackage(
+    emailSender: EmailSender,
+    emailAddress: EmailAddress,
+    unsubscribedPackage: FullPackage,
+    hostAddress: Host,
+    hostPort: Int
+  ): IO[Unit] = {
+    val content =
+      s"""
+         |You have successfully unsubscribed from version updates for the following package:
+         |
+         |${printPackage(unsubscribedPackage, hostAddress, hostPort)}
+         |
+         |Ultimately this service is built on top of Fedora's Anitya project (release-monitoring.org), so we've included a link to the release-monitoring.org page for this package.
+       """.stripMargin
+    emailSender.email(
+      to = emailAddress,
+      subject = s"Unsubscribed from version updates for ${unsubscribedPackage.name}",
       content = content
     )
   }

@@ -10,7 +10,7 @@ import cats.data.{Ior, Kleisli, NonEmptyList}
 import cats.effect.{Blocker, ContextShift, IO, Resource}
 import cats.implicits._
 import com.changlinli.releaseNotification.WebServer._
-import com.changlinli.releaseNotification.data.{EmailAddress, FullPackage, PackageName, PackageVersion, UnsubscribeCode}
+import com.changlinli.releaseNotification.data.{ConfirmationCode, EmailAddress, FullPackage, PackageName, PackageVersion, UnsubscribeCode}
 import com.changlinli.releaseNotification.ids.{AnityaId, EmailId, PackageId, SubscriptionId}
 import doobie.{Transactor, _}
 import doobie.implicits._
@@ -57,6 +57,9 @@ object Persistence extends CustomLogging {
          |`emailId` INTEGER NOT NULL,
          |`packageId` INTEGER,
          |`specialType` TEXT,
+         |`createdTime` INTEGER NOT NULL,
+         |`confirmationCode` TEXT NOT NULL,
+         |`confirmedTime` INTEGER,
          |PRIMARY KEY(`id`),
          |FOREIGN KEY(`emailId`) REFERENCES `emails`(`id`),
          |FOREIGN KEY(`packageId`) REFERENCES `packages`(`id`),
@@ -122,12 +125,54 @@ object Persistence extends CustomLogging {
     getSubscriptionIdFromCodeQuery(code).to[List].map(_.headOption.map(SubscriptionId.apply))
   }
 
-  def unsubscribeUsingCode(code: UnsubscribeCode): doobie.ConnectionIO[Int] = {
+  private def confirmSubscriptionQuery(confirmationCode: ConfirmationCode, currentTime: Instant): doobie.Update0 = {
+    sql"""UPDATE `subscriptions` SET confirmedTime=${currentTime.getEpochSecond} WHERE confirmationCode=${confirmationCode.str}"""
+      .updateWithLogHandler(doobieLogHandler)
+  }
+
+  def confirmSubscription(confirmationCode: ConfirmationCode, currentTime: Instant): doobie.ConnectionIO[Int] = {
+    confirmSubscriptionQuery(confirmationCode, currentTime).run
+  }
+
+  def retrievePackageAssociatedWithSubscriptionId(subscriptionId: SubscriptionId): ConnectionIO[Option[FullPackage]] = {
+    sql"""SELECT packages.id, packages.name, packages.homepage, packages.anityaId, packages.currentVersion FROM `packages`
+         |INNER JOIN `subscriptions` ON subscriptions.packageId = packages.id
+         |WHERE subscriptions.id = ${subscriptionId.toInt}"""
+      .stripMargin
+      .queryWithLogHandler[(Int, String, String, Int, String)](doobieLogHandler)
+      .to[List]
+      .map(_.headOption)
+      .map{
+        _.map{
+          case (packageId, name, homepage, anityaId, currentVersion) =>
+            FullPackage(
+              name = PackageName(name),
+              homepage = homepage,
+              anityaId = anityaId,
+              packageId = packageId,
+              currentVersion = PackageVersion(currentVersion)
+            )
+        }
+      }
+  }
+
+  def retrievePackageAssociatedWithCode(code: UnsubscribeCode): ConnectionIO[Option[FullPackage]] = {
+    for {
+      subscriptionIdOpt <- getSubsciptionIdFromCode(code)
+      result <- subscriptionIdOpt
+        .traverse(retrievePackageAssociatedWithSubscriptionId)
+        .map(_.flatten)
+    } yield result
+  }
+
+  def unsubscribeUsingCode(code: UnsubscribeCode): doobie.ConnectionIO[Option[(FullPackage, EmailAddress)]] = {
     for {
       subscriptionIdOpt <- getSubsciptionIdFromCode(code)
       _ <- markUnsubscribeCodeAsUsedQuery(code).run
-      rows <- subscriptionIdOpt.fold(0.pure[ConnectionIO])(unsubscribeUsingSubscriptionId)
-    } yield rows
+      affectedPackageAndEmail <- subscriptionIdOpt
+        .traverse(unsubscribeUsingSubscriptionId)
+        .map(_.flatten)
+    } yield affectedPackageAndEmail
   }
 
   def markUnsubscribeCodeAsUsedQuery(code: UnsubscribeCode): doobie.Update0 = {
@@ -135,7 +180,10 @@ object Persistence extends CustomLogging {
       .updateWithLogHandler(doobieLogHandler)
   }
 
-  def processAction(action: PersistenceAction, transactor: Transactor[IO])(implicit contextShift: ContextShift[IO]): IO[Unit] = {
+  def processAction(
+    action: PersistenceAction,
+    transactor: Transactor[IO]
+  )(implicit contextShift: ContextShift[IO]): IO[Unit] = {
     action match {
       case UnsubscribeEmailFromAllPackages(email) =>
         unsubscribe(email).transact(transactor).void
@@ -146,7 +194,14 @@ object Persistence extends CustomLogging {
       case SubscribeToPackagesFullName(email, pkgs) =>
         val zippedPkgs = pkgs.traverse(pkg => UnsubscribeCode.generateUnsubscribeCode.map((pkg, _)))
         zippedPkgs.flatMap{
-          subscribeToPackagesFullName(email, _).transact(transactor).void
+          pkgsWithUnsubscribeCodes =>
+            for {
+              currentTime <- IO(Instant.now())
+              confirmationCode <- ConfirmationCode.generateConfirmationCode
+              _ <- subscribeToPackagesFullName(email, pkgsWithUnsubscribeCodes, currentTime, confirmationCode)
+                .transact(transactor)
+                .void
+            } yield ()
         }
     }
   }
@@ -240,18 +295,24 @@ object Persistence extends CustomLogging {
   }
 
   def packageIdsInSubscriptionWithEmail(email: EmailId): doobie.ConnectionIO[List[(SubscriptionId, PackageId)]] = {
-    sql"""SELECT id, packageId FROM `subscriptions` WHERE emailId"""
+    sql"""SELECT id, packageId FROM `subscriptions` WHERE emailId=${email.toInt}"""
       .queryWithLogHandler[(Int, Int)](doobieLogHandler)
       .map{case (subId, pkgId) => (SubscriptionId(subId), PackageId(pkgId))}
       .to[List]
   }
 
-  def subscribeToPackagesFullName(email: EmailAddress, pkgsWithUnsubscribeCodes: NonEmptyList[(FullPackage, UnsubscribeCode)]): ConnectionIO[Ior[SubscriptionsAlreadyExistErr, Int]] = {
+  def subscribeToPackagesFullName(
+    email: EmailAddress,
+    pkgsWithUnsubscribeCodes: NonEmptyList[(FullPackage, UnsubscribeCode)],
+    currentTime: Instant,
+    confirmationCode: ConfirmationCode
+  ): ConnectionIO[Ior[SubscriptionsAlreadyExistErr, Int]] = {
     val pkgs = pkgsWithUnsubscribeCodes.map(_._1)
     val retrieveEmailId =
       sql"""SELECT `id` FROM `emails` WHERE emailAddress = ${email.str}"""
     def insertIntoSubscriptions(emailId: Int, pkg: FullPackage) =
-      sql"""INSERT OR IGNORE INTO `subscriptions` (emailId, packageId) VALUES ($emailId, ${pkg.packageId}) """
+      sql"""INSERT OR IGNORE INTO `subscriptions` (emailId, packageId, createdTime, confirmationCode) VALUES
+           |($emailId, ${pkg.packageId}, ${currentTime.getEpochSecond}, ${confirmationCode.str}) """.stripMargin
     def retrieveSubscriptionId(emailId: Int, pkgId: PackageId) =
       sql"""SELECT `id` FROM `subscriptions` WHERE emailId = $emailId AND packageId=${pkgId.toInt}"""
     for {
@@ -322,10 +383,37 @@ object Persistence extends CustomLogging {
       .run
   }
 
-  def unsubscribeUsingSubscriptionId(subscriptionId: SubscriptionId): ConnectionIO[Int] = {
-    sql"""DELETE FROM subscriptions WHERE id = ${subscriptionId.toInt}"""
+  def unsubscribeUsingSubscriptionId(subscriptionId: SubscriptionId): ConnectionIO[Option[(FullPackage, EmailAddress)]] = {
+    val associatedEmail =
+      sql"""SELECT emails.emailAddress FROM emails
+           |INNER JOIN subscriptions ON subscriptions.emailId = emails.id
+           |WHERE subscriptions.id = ${subscriptionId.toInt}""".stripMargin
+        .queryWithLogHandler[String](doobieLogHandler)
+        // We can use unsafeFromString because we assume that it's a valid email if it made it into the database
+        .map{emailStr => EmailAddress.unsafeFromString(emailStr)}
+        .to[List]
+        .map(_.headOption)
+    val retrievePackages = sql"""SELECT packages.id, packages.name, packages.homepage, packages.anityaId, packages.currentVersion FROM subscriptions
+         |INNER JOIN packages ON packages.id = subscriptions.packageId
+         |WHERE subscriptions.id = ${subscriptionId.toInt}""".stripMargin
+      .queryWithLogHandler[(Int, String, String, Int, String)](doobieLogHandler)
+      .map{case (id, name, homepage, anityaId, currentVersion) => FullPackage(
+        packageId = id,
+        name = PackageName(name),
+        homepage = homepage,
+        anityaId = anityaId,
+        currentVersion = PackageVersion(currentVersion))
+      }
+      .to[List]
+      .map(_.headOption)
+    val deleteSubscription = sql"""DELETE FROM subscriptions WHERE id = ${subscriptionId.toInt}"""
       .updateWithLogHandler(doobieLogHandler)
       .run
+    for {
+      email <- associatedEmail
+      pkgAffected <- retrievePackages
+      _ <- deleteSubscription
+    } yield pkgAffected.map2(email){(_, _)}
   }
 
   def unsubscribeEmailFromPackage(email: EmailAddress, packageName: PackageName): ConnectionIO[Int] = {
