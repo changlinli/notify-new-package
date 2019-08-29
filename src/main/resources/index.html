@@ -119,6 +119,7 @@
     }
 
     function removePackageFromToSubscribe(resultElem) {
+      packagesToSubscribeTo.delete(resultElem.anityaId);
       createListOfSubscriptions();
     }
 
