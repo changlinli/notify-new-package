@@ -5,15 +5,16 @@ import java.util.UUID
 import cats.effect.IO
 import com.changlinli.releaseNotification.WebServer
 import org.http4s.Uri
-import org.http4s.Uri.{Authority, Host}
+import org.http4s.Uri.{Authority, Scheme}
 
 sealed abstract case class ConfirmationCode(str: String) {
-  def generateConfirmationUri(hostAddress: Host, hostPort: Int): Uri = {
+  def generateConfirmationUri(authority: Authority): Uri = {
     // If we have port 80 we drop it from the URL we're creating because it's
     // unnecessary for web browsers
-    val hostPortOpt = if (hostPort == 80) None else Some(hostPort)
+    val hostPortOpt = if (authority.port.contains(80)) None else authority.port
     Uri(
-      authority = Some(Authority(host = hostAddress, port = hostPortOpt)),
+      scheme = Some(Scheme.https),
+      authority = Some(authority.copy(port = hostPortOpt)),
       path = s"/${WebServer.confirmationPath}/$str"
     )
   }

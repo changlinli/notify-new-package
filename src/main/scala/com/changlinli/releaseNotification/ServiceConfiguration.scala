@@ -4,7 +4,7 @@ import cats.effect.{Effect, IO}
 import cats.implicits._
 import com.changlinli.releaseNotification.data.EmailAddress
 import org.http4s.Uri
-import org.http4s.Uri.{Host, Ipv4Address, Ipv6Address, RegName}
+import org.http4s.Uri.{Authority, Host, Ipv4Address, Ipv6Address, RegName}
 import org.http4s.syntax.all._
 import org.http4s.util.CaseInsensitiveString
 import scopt.OptionParser
@@ -19,21 +19,58 @@ case object DoNotBulkDownloadPackageDatabase extends PackageDatabaseOption
 
 final case class ServiceConfiguration(
   databaseFile: String = "sample.db",
-  portNumber: Int = 8080,
+  bindPortNumber: Int = 8080,
   databaseCreationOpt: DatabaseCreationOption = PreexistingDatabase,
   bindAddress: Host = Ipv4Address.unsafeFromString("127.0.0.1"),
+  urlOfSite: Authority = Authority(host = RegName("example.com")),
   anityaUrl: Uri = uri"https://release-monitoring.org",
   rebuildPackageDatabase: PackageDatabaseOption = DoNotBulkDownloadPackageDatabase,
   adminEmailRedirect: EmailAddress = EmailAddress.unsafeFromString("example@example.com")
 )
 
 object ServiceConfiguration {
+  private def parseHostFromString(address: String): Host = {
+    Ipv4Address.fromString(address)
+      .orElse(Ipv6Address.fromString(address))
+      .getOrElse(RegName(CaseInsensitiveString(address)))
+  }
   val cmdLineOptionParser: OptionParser[ServiceConfiguration] = new scopt.OptionParser[ServiceConfiguration]("notify-new-package") {
     head("notify-new-package", "0.0.1")
 
-    opt[Unit]('b', "build-package-database").action{
-      (_, config) => config.copy(rebuildPackageDatabase = RecreatePackageDatabaseFromBulkDownload)
-    }
+    opt[String]('p', "public-site-name").required()
+      .validate{
+        publicSiteName =>
+          publicSiteName.split(":").toList.get(1) match {
+            case Some(potentialPort) =>
+              if (potentialPort.toIntOption.isDefined) {
+                success
+              } else {
+                failure(s"The port number passed (the string after the colon) was $potentialPort, which does not seem to be a valid integer")
+              }
+            case None =>
+              success
+          }
+      }
+      .action{
+        (publicSiteName, config) =>
+          val publicAuthority = publicSiteName.split(":").toList match {
+            case domain :: Nil =>
+              Authority(host = parseHostFromString(domain))
+            case domain :: portStr :: Nil =>
+              val host = parseHostFromString(domain)
+              // We can use an unsafe toInt because we previously validated in
+              // validate that this is a valid int... yes scopt sucks with its design
+              val port = portStr.toInt
+              Authority(host = host, port = Some(port))
+          }
+          config.copy(urlOfSite = publicAuthority)
+      }
+
+    opt[Unit]('b', "build-package-database")
+      .action{
+        (_, config) => config.copy(rebuildPackageDatabase = RecreatePackageDatabaseFromBulkDownload)
+      }
+      .text("Setting this flag causes the program to redownload the entire package database from the configured Anitya (release-monitoring) website.")
 
     opt[String]('e', "admin-email-address").required()
       .validate{
@@ -56,7 +93,7 @@ object ServiceConfiguration {
     }
 
     opt[Int]('p', "port").action{
-      (port, config) => config.copy(portNumber = port)
+      (port, config) => config.copy(bindPortNumber = port)
     }
 
     opt[Unit]('i', "initialize-database").action{
@@ -66,9 +103,7 @@ object ServiceConfiguration {
     opt[String]('a', "bind-address")
       .action{
         (address, config) =>
-          val host = Ipv4Address.fromString(address)
-            .orElse(Ipv6Address.fromString(address))
-            .getOrElse(RegName(CaseInsensitiveString(address)))
+          val host = parseHostFromString(address)
           config.copy(bindAddress = host)
       }
 

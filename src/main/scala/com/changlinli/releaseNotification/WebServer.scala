@@ -3,11 +3,11 @@ package com.changlinli.releaseNotification
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 
-import cats.data.{EitherT, Ior, IorT, NonEmptyList, OptionT}
+import cats.data._
 import cats.effect.{Blocker, ContextShift, Effect, IO, Timer}
 import cats.implicits._
 import cats.kernel.Semigroup
-import com.changlinli.releaseNotification.data.{ConfirmationCode, EmailAddress, FullPackage, PackageName, UnsubscribeCode}
+import com.changlinli.releaseNotification.data._
 import com.changlinli.releaseNotification.ids.{AnityaId, SubscriptionId}
 import doobie.free.connection.ConnectionIO
 import doobie.implicits._
@@ -23,7 +23,6 @@ import org.http4s.implicits._
 import org.http4s.scalatags._
 import org.http4s.server.Router
 import org.http4s.server.blaze.BlazeServerBuilder
-import org.sqlite.{SQLiteErrorCode, SQLiteException}
 
 import scala.concurrent.duration.FiniteDuration
 import scala.language.higherKinds
@@ -251,8 +250,7 @@ object WebServer extends CustomLogging {
     email: EmailAddress,
     resultOfSubscribe: Ior[NoPackagesFoundForAnityaIds, (NonEmptyList[(FullPackage, UnsubscribeCode)], ConfirmationCode)],
     emailSender: EmailSender,
-    hostAddress: Host,
-    hostPort: Int
+    publicSiteName: Authority
   ): IO[Response[IO]] = {
     resultOfSubscribe match {
       case Ior.Both(err @ NoPackagesFoundForAnityaIds(anityaIds), (pkgsWithUnsubscribeCodes, confirmationCode)) =>
@@ -261,8 +259,7 @@ object WebServer extends CustomLogging {
           email,
           pkgsWithUnsubscribeCodes,
           confirmationCode,
-          hostAddress,
-          hostPort
+          publicSiteName
         )
         IO(logger.warn(err))
           .>>(emailAction)
@@ -276,8 +273,7 @@ object WebServer extends CustomLogging {
           email,
           pkgsWithUnsubscribeCodes,
           confirmationCode,
-          hostAddress,
-          hostPort
+          publicSiteName
         )
         emailAction.>>(Ok(HtmlGenerators.successfullySubmittedFrom(pkgsWithUnsubscribeCodes.map(_._1))))
     }
@@ -346,8 +342,9 @@ object WebServer extends CustomLogging {
     emailSender: EmailSender,
     blocker: Blocker,
     transactor: Transactor[IO],
-    hostAddress: Host,
-    hostPort: Int,
+    publicSiteName: Authority,
+    bindingAddress: Host,
+    bindingPort: Int,
     adminEmailAddress: EmailAddress
   )(implicit contextShift: ContextShift[IO]
   ): HttpRoutes[IO] = HttpRoutes.of[IO]{
@@ -366,7 +363,7 @@ object WebServer extends CustomLogging {
               confirmationCode <- ConfirmationCode.generateConfirmationCode
               resultOfSubscription <- fullySubscribeToPackages(incomingSubscription.email, packagesWithAnityaIds, currentTime, confirmationCode)
                 .transact(transactor)
-              response <- processDatabaseResponse(incomingSubscription.email, resultOfSubscription, emailSender, hostAddress, hostPort)
+              response <- processDatabaseResponse(incomingSubscription.email, resultOfSubscription, emailSender, publicSiteName)
             } yield response
         }
       } yield response
@@ -397,8 +394,6 @@ object WebServer extends CustomLogging {
                   emailSender,
                   emailAddress,
                   unsubscribedPackage,
-                  hostAddress,
-                  hostPort
                 )
               )
               response <- OptionT.liftF(
@@ -440,7 +435,7 @@ object WebServer extends CustomLogging {
                 logger.warn(s"We only expected a unique email address to come back here, but we got more than one: $emailToPkgs")
               val emailAction = emailToPkgs.traverse_{
                 case (emailAddress, pkgsAndUnsubscribeCodes) =>
-                  emailSuccessfullySubscribedPackages(emailSender, emailAddress, pkgsAndUnsubscribeCodes, hostAddress, hostPort)
+                  emailSuccessfullySubscribedPackages(emailSender, emailAddress, pkgsAndUnsubscribeCodes, publicSiteName)
               }
               val httpResponse = Ok(HtmlGenerators.subscribeConfirmation(pkgsUnsubscribeCodeAndEmailAddress.map(_._1)))
               val fullAction = emailAction.>>(httpResponse)
@@ -464,8 +459,7 @@ object WebServer extends CustomLogging {
   private def printPackageWithUnsubscribe(
     pkg: FullPackage,
     unsubscribeCode: UnsubscribeCode,
-    hostAddress: Host,
-    hostPort: Int
+    publicSiteName: Authority,
   ): String = {
     val releaseMonitoringLink = Uri(
       scheme = Some(Scheme.https),
@@ -477,14 +471,12 @@ object WebServer extends CustomLogging {
        |Package Homepage: ${pkg.homepage}
        |Current Version: ${pkg.currentVersion.str}
        |release-monitoring.org link (see the bottom of this email): ${releaseMonitoringLink.renderString}
-       |Unsubscribe link (see the bottom of this email): ${unsubscribeCode.generateUnsubscribeUri(hostAddress, hostPort).renderString}
+       |Unsubscribe link (see the bottom of this email): ${unsubscribeCode.generateUnsubscribeUri(publicSiteName).renderString}
      """.stripMargin
   }
 
   private def printPackage(
     pkg: FullPackage,
-    hostAddress: Host,
-    hostPort: Int
   ): String = {
     val releaseMonitoringLink = Uri(
       scheme = Some(Scheme.https),
@@ -504,17 +496,16 @@ object WebServer extends CustomLogging {
     emailAddress: EmailAddress,
     packages: NonEmptyList[(FullPackage, UnsubscribeCode)],
     confirmationCode: ConfirmationCode,
-    hostAddress: Host,
-    hostPort: Int
+    publicSiteName: Authority
   ): IO[Unit] = {
     val content =
       s"""Hi we've received a request to sign you up for email updates for new versions of the following packages:
          |
-         |${packages.map{case (p, unsubscribeCode) => printPackageWithUnsubscribe(p, unsubscribeCode, hostAddress, hostPort)}.mkString("\n\n")}
+         |${packages.map{case (p, unsubscribeCode) => printPackageWithUnsubscribe(p, unsubscribeCode, publicSiteName)}.mkString("\n\n")}
          |
-         |If this was you, please confirm by opening this page in your web browser: ${confirmationCode.generateConfirmationUri(hostAddress, hostPort).renderString}
+         |If this was you, please confirm by opening this page in your web browser: ${confirmationCode.generateConfirmationUri(publicSiteName).renderString}
          |
-         |If that was not you, you can either ignore this email, or send an email to admin@${hostAddress.renderString} if you'd like us to look into someone entering your email address without your permission.
+         |If that was not you, you can either ignore this email, or send an email to admin@${publicSiteName.host.renderString} if you'd like us to look into someone entering your email address without your permission.
          |
          |In the future if you'd like to unsubscribe to updates for a particular package, simply entering any of those unsubscribe links into your web browser will do the trick.
          |
@@ -543,8 +534,7 @@ object WebServer extends CustomLogging {
     emailSender: EmailSender,
     emailAddress: EmailAddress,
     packages: NonEmptyList[(FullPackage, UnsubscribeCode)],
-    hostAddress: Host,
-    hostPort: Int
+    publicSiteName: Authority,
   ): IO[Unit] = {
     val content =
       s"""
@@ -552,11 +542,11 @@ object WebServer extends CustomLogging {
          |
          |You will get an email any time one of the following packages gets a new version:
          |
-         |${packages.map{case (p, unsubscribeCode) => printPackageWithUnsubscribe(p, unsubscribeCode, hostAddress, hostPort)}.mkString("\n\n")}
+         |${packages.map{case (p, unsubscribeCode) => printPackageWithUnsubscribe(p, unsubscribeCode, publicSiteName)}.mkString("\n\n")}
          |
          |If you'd like to unsubscribe to updates for a particular package, simply entering any of those unsubscribe links into your web browser will do the trick.
          |
-         |I currently haven't implemented the ability to unsubscribe from all packages at once. If you'd like to do so, please just send an email to admin@${hostAddress.renderString}
+         |I currently haven't implemented the ability to unsubscribe from all packages at once. If you'd like to do so, please just send an email to admin@${publicSiteName.host.renderString}
          |
          |Ultimately this service is built on top of Fedora's Anitya project (release-monitoring.org), so we've included a link to the release-monitoring.org page for this package.
        """.stripMargin
@@ -571,14 +561,12 @@ object WebServer extends CustomLogging {
     emailSender: EmailSender,
     emailAddress: EmailAddress,
     unsubscribedPackage: FullPackage,
-    hostAddress: Host,
-    hostPort: Int
   ): IO[Unit] = {
     val content =
       s"""
          |You have successfully unsubscribed from version updates for the following package:
          |
-         |${printPackage(unsubscribedPackage, hostAddress, hostPort)}
+         |${printPackage(unsubscribedPackage)}
          |
          |Ultimately this service is built on top of Fedora's Anitya project (release-monitoring.org), so we've included a link to the release-monitoring.org page for this package.
        """.stripMargin
@@ -599,8 +587,9 @@ object WebServer extends CustomLogging {
 
   def runWebServer(
     emailSender: EmailSender,
+    publicSiteName: Authority,
     port: Int,
-    hostAddress: Host,
+    bindingAddress: Host,
     blocker: Blocker,
     transactor: Transactor[IO],
     adminEmailAddress: EmailAddress
@@ -608,11 +597,11 @@ object WebServer extends CustomLogging {
     contextShift: ContextShift[IO]
   ): IO[Unit] = {
     val allRoutes = Router(
-      ("", webService(emailSender, blocker, transactor, hostAddress, port, adminEmailAddress)),
+      ("", webService(emailSender, blocker, transactor, publicSiteName, bindingAddress, port, adminEmailAddress)),
       ("", staticRoutes(blocker))
     )
     BlazeServerBuilder[IO]
-      .bindHttp(port, hostAddress.renderString)
+      .bindHttp(port, bindingAddress.renderString)
       .withHttpApp(allRoutes.orNotFound)
       .serve
       .compile

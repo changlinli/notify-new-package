@@ -160,7 +160,7 @@ object Main extends MyIOApp with Logging {
     _ <- IO(System.setProperty(org.slf4j.impl.SimpleLogger.DATE_TIME_FORMAT_KEY, "yyyy-MM-dd'T'HH:mm:ss.SSSZ"))
     cmdLineOpts <- ServiceConfiguration.parseCommandLineOptions(args)
     _ <- IO(logger.info(s"These are the commandline options we parsed: $cmdLineOpts"))
-    emailSender <- EmailSender.initialize(cmdLineOpts.bindAddress)
+    emailSender <- EmailSender.initialize(cmdLineOpts.urlOfSite.host)
     fs2Rabbit <- generateFs2Rabbit
     allResources = for {
       blazeClient <- JavaNetClientBuilder[IO](blocker).resource
@@ -198,7 +198,15 @@ object Main extends MyIOApp with Logging {
           case RecreatePackageDatabaseFromBulkDownload => processAnityaInBackground.start
           case DoNotBulkDownloadPackageDatabase => IO.unit.start
         }
-        webServerFiber <- WebServer.runWebServer(emailSender, cmdLineOpts.portNumber, cmdLineOpts.bindAddress, blocker, doobieTransactor, cmdLineOpts.adminEmailRedirect).start
+        webServerFiber <- WebServer.runWebServer(
+          emailSender,
+          cmdLineOpts.urlOfSite,
+          cmdLineOpts.bindPortNumber,
+          cmdLineOpts.bindAddress,
+          blocker,
+          doobieTransactor,
+          cmdLineOpts.adminEmailRedirect
+        ).start
         stream = fs2.io.stdin[IO](1, blocker).evalMap{
           b =>
             if (b == 's'.toByte) {
