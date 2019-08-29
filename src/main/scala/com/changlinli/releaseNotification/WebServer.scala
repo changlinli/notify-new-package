@@ -29,7 +29,6 @@ import scala.language.higherKinds
 
 object WebServer extends CustomLogging {
 
-
   sealed trait Action
   sealed trait EmailAction extends Action
   final case class UnsubscribeEmailFromPackage(email: EmailAddress, pkg: PackageName) extends EmailAction with PersistenceAction

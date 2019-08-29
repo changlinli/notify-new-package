@@ -25,7 +25,8 @@ final case class ServiceConfiguration(
   urlOfSite: Authority = Authority(host = RegName("example.com")),
   anityaUrl: Uri = uri"https://release-monitoring.org",
   rebuildPackageDatabase: PackageDatabaseOption = DoNotBulkDownloadPackageDatabase,
-  adminEmailRedirect: EmailAddress = EmailAddress.unsafeFromString("example@example.com")
+  adminEmailRedirect: EmailAddress = EmailAddress.unsafeFromString("example@example.com"),
+  sendGridAPIKey: String = "unknownApiKey"
 )
 
 object ServiceConfiguration {
@@ -36,6 +37,12 @@ object ServiceConfiguration {
   }
   val cmdLineOptionParser: OptionParser[ServiceConfiguration] = new scopt.OptionParser[ServiceConfiguration]("notify-new-package") {
     head("notify-new-package", "0.0.1")
+
+    opt[String]('s', "sendgrid-api-key")
+      .required()
+      .action{
+        (sendGridAPIKey, config) => config.copy(sendGridAPIKey = sendGridAPIKey)
+      }
 
     opt[String]('p', "public-site-name").required()
       .validate{
@@ -56,12 +63,15 @@ object ServiceConfiguration {
           val publicAuthority = publicSiteName.split(":").toList match {
             case domain :: Nil =>
               Authority(host = parseHostFromString(domain))
-            case domain :: portStr :: Nil =>
+            case domain :: portStr :: _ =>
               val host = parseHostFromString(domain)
               // We can use an unsafe toInt because we previously validated in
               // validate that this is a valid int... yes scopt sucks with its design
               val port = portStr.toInt
               Authority(host = host, port = Some(port))
+            case Nil =>
+              // This is impossible because of the previous validation step that has a .get(1)
+              throw new Exception("Programmer error! This should be impossible because of a previous validation step")
           }
           config.copy(urlOfSite = publicAuthority)
       }

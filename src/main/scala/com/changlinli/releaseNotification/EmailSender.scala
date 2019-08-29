@@ -30,7 +30,6 @@ class EmailSender(sendGrid: SendGrid, hostAddress: Host) extends CustomLogging {
 }
 
 object EmailSender {
-  val sendGridApiKey = "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"
-  def initialize(hostAddress: Host): IO[EmailSender] =
+  def initialize(hostAddress: Host, sendGridApiKey: String): IO[EmailSender] =
     IO(new SendGrid(sendGridApiKey)).map(new EmailSender(_, hostAddress))
 }
