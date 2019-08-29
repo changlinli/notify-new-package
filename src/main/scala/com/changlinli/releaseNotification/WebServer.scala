@@ -164,12 +164,12 @@ object WebServer extends CustomLogging {
               .|>(EitherT.apply)
               .map(_ :: pages)
           // To make sure we don't overwhelm the web server
-          val sleep =  EitherT.liftF[IO, AnityaProjectJsonWasInUnexpectedFormat, Unit](IO(logger.info("WJREIOAJWOEIRJAWRJ SLEEPING!")) *> IO.sleep(FiniteDuration(1, TimeUnit.SECONDS)))
+          val sleep =  EitherT.liftF[IO, AnityaProjectJsonWasInUnexpectedFormat, Unit](IO(logger.info("Briefly sleeping to avoid overloading the Anitya server")) *> IO.sleep(FiniteDuration(1, TimeUnit.SECONDS)))
           webRequest <* sleep
       }{ pages =>
         val currentPage = pages.head
         val numOfRemainingItems = currentPage.total_items - currentPage.items_per_page * currentPage.page
-        println(s"WJEROAWJEPORJAWOPEJRPOAJOWEPRJAPOWEPROWARWEP This is our numOfRemainingItems: $numOfRemainingItems")
+        logger.info(s"We have this many packages left to retrieve from Anitya: $numOfRemainingItems")
         numOfRemainingItems > 0
       }
     } yield allPages
