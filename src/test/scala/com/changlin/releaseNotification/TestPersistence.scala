@@ -3,9 +3,10 @@ package com.changlin.releaseNotification
 import java.time.Instant
 import java.util.concurrent.Executors
 
-import cats.data.NonEmptyList
+import cats.data.{Ior, NonEmptyList}
 import cats.effect.{Blocker, ContextShift, IO}
 import com.changlinli.releaseNotification.Persistence
+import com.changlinli.releaseNotification.WebServer.{SubscriptionAlreadyExists, SubscriptionsAlreadyExistErr}
 import com.changlinli.releaseNotification.data.{ConfirmationCode, EmailAddress, FullPackage, PackageName, PackageVersion, UnsubscribeCode}
 import com.changlinli.releaseNotification.ids.SubscriptionId
 import doobie.implicits._
@@ -27,7 +28,7 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
 
   implicit val contextSwitch: ContextShift[IO] = IO.contextShift(executionContext)
 
-  "Inserting a subscription to a non-existent package" should "blow up with a failure" in {
+  "Inserting a subscription" should "blow up with a failure if the package does not exist" in {
     val action = for {
       _ <- Persistence.initializeDatabase
       _ <- Persistence.subscribeToPackagesFullName(
@@ -61,6 +62,51 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
       )
     } yield ()
     action.transact(transactor).unsafeRunSync()
+  }
+  it should "yield an error if the subscription already exists" in {
+    val fullPackage = FullPackage(name = PackageName("hello"), homepage = "hello.com", anityaId = 1, packageId = 1, currentVersion = PackageVersion("1.0"))
+    val email = EmailAddress.unsafeFromString("hello@hello.com")
+    val action = for {
+      _ <- Persistence.initializeDatabase
+      _ <- Persistence.upsertPackage("hello", "hello.com", 1, PackageVersion("1.0"))
+      _ <- Persistence.subscribeToPackagesFullName(
+        email,
+        NonEmptyList.of(
+          (
+            fullPackage,
+            UnsubscribeCode.unsafeFromString("unsubscribeString0")
+          )
+        ),
+        Instant.EPOCH,
+        ConfirmationCode.unsafeFromString("confirm")
+      )
+      secondResult <- Persistence.subscribeToPackagesFullName(
+        email,
+        NonEmptyList.of(
+          (
+            fullPackage,
+            UnsubscribeCode.unsafeFromString("unsubscribeString1")
+          )
+        ),
+        Instant.EPOCH,
+        ConfirmationCode.unsafeFromString("confirm")
+      )
+    } yield secondResult
+    val expectedResult = Ior.Left(
+      SubscriptionsAlreadyExistErr(
+        NonEmptyList.of(
+          SubscriptionAlreadyExists(
+            subscriptionId = SubscriptionId(1),
+            pkg = fullPackage,
+            emailAddress = email,
+            packageUnsubscribeCode = UnsubscribeCode.unsafeFromString("unsubscribeString0"),
+            confirmationCode = ConfirmationCode.unsafeFromString("confirm"),
+            confirmedTime = None
+          )
+        )
+      )
+    )
+    action.transact(transactor).unsafeRunSync() should be (expectedResult)
   }
 
   "The persistence layer" should "succeed in retrieving all email addresses subscribed to all packages and return an empty list of them" in {

@@ -204,32 +204,6 @@ object Persistence extends CustomLogging {
       .updateWithLogHandler(doobieLogHandler)
   }
 
-  def processAction(
-    action: PersistenceAction,
-    transactor: Transactor[IO]
-  )(implicit contextShift: ContextShift[IO]): IO[Unit] = {
-    action match {
-      case UnsubscribeEmailFromAllPackages(email) =>
-        unsubscribe(email).transact(transactor).void
-      case ChangeEmail(oldEmail, newEmail) =>
-        changeEmail(oldEmail, newEmail).transact(transactor).void
-      case UnsubscribeEmailFromPackage(email, pkg) =>
-        unsubscribeEmailFromPackage(email, pkg).transact(transactor).void
-      case SubscribeToPackagesFullName(email, pkgs) =>
-        val zippedPkgs = pkgs.traverse(pkg => UnsubscribeCode.generateUnsubscribeCode.map((pkg, _)))
-        zippedPkgs.flatMap{
-          pkgsWithUnsubscribeCodes =>
-            for {
-              currentTime <- IO(Instant.now())
-              confirmationCode <- ConfirmationCode.generateConfirmationCode
-              _ <- subscribeToPackagesFullName(email, pkgsWithUnsubscribeCodes, currentTime, confirmationCode)
-                .transact(transactor)
-                .void
-            } yield ()
-        }
-    }
-  }
-
   def searchForPackagesByNameFragmentQuery(nameFragment: String): doobie.Query0[(Int, String, String, Int, String)] = {
     sql"""SELECT id, name, homepage, anityaId, currentVersion FROM `packages` WHERE name LIKE ${s"%$nameFragment%"} LIMIT 10"""
       .queryWithLogHandler[(Int, String, String, Int, String)](doobieLogHandler)
@@ -318,10 +292,31 @@ object Persistence extends CustomLogging {
     sql"""INSERT OR IGNORE INTO `emails` (emailAddress) VALUES (${email.str})""".updateWithLogHandler(doobieLogHandler)
   }
 
-  def packageIdsInSubscriptionWithEmail(email: EmailId): doobie.ConnectionIO[List[(SubscriptionId, PackageId)]] = {
-    sql"""SELECT id, packageId FROM `subscriptions` WHERE emailId=${email.toInt}"""
-      .queryWithLogHandler[(Int, Int)](doobieLogHandler)
-      .map{case (subId, pkgId) => (SubscriptionId(subId), PackageId(pkgId))}
+  def packageIdsInSubscriptionWithEmail(email: EmailId): doobie.ConnectionIO[List[(SubscriptionId, FullPackage, UnsubscribeCode, ConfirmationCode, Option[Instant])]] = {
+    sql"""SELECT subscriptions.id, packages.id, packages.name, packages.homepage, packages.anityaId, packages.currentVersion, unsubscribeCodes.code, subscriptions.confirmationCode, subscriptions.confirmedTime
+         |FROM `subscriptions`
+         |INNER JOIN `packages` ON packages.id = subscriptions.packageId
+         |INNER JOIN `unsubscribeCodes` ON unsubscribeCodes.subscriptionId = subscriptions.id
+         |WHERE emailId=${email.toInt}"""
+      .stripMargin
+      .queryWithLogHandler[(Int, Int, String, String, Int, String, String, String, Option[Long])](doobieLogHandler)
+      .map{case (subId, pkgId, pkgName, pkgHomepage, pkgAnityaId, pkgCurrentVersion, unsubscribeCode, confirmationCode, confirmedTimeOpt) =>
+        (
+          SubscriptionId(subId),
+          FullPackage(
+            name = PackageName(pkgName),
+            homepage = pkgHomepage,
+            anityaId = pkgAnityaId,
+            packageId = pkgId,
+            currentVersion = PackageVersion(pkgCurrentVersion)
+          ),
+          // We can use this fromString because we're getting it directly from the DB
+          UnsubscribeCode.unsafeFromString(unsubscribeCode),
+          // Ditto
+          ConfirmationCode.unsafeFromString(confirmationCode),
+          confirmedTimeOpt.map(Instant.ofEpochSecond)
+        )
+      }
       .to[List]
   }
 
@@ -346,19 +341,13 @@ object Persistence extends CustomLogging {
         case id :: _ => id
         case Nil => throw new Exception(s"This is a programming bug! Because we just inserted an email in this transaction")
       }
-      subAndPkgIds <- packageIdsInSubscriptionWithEmail(EmailId(emailId))
-      pkgIdsToPkgs = pkgs.groupBy(_.packageId).view.mapValues(_.head).toMap
-      pkgToExistingSubId = subAndPkgIds.map(_.swap).toMap
-      pkgIdsToPkgsExistingSub = pkgIdsToPkgs
-        .transform{case (key, value) => pkgToExistingSubId.get(PackageId(key)).map((_, value))}
-        .toList
-        .collect{case (key, Some(value)) => (key, value)}
-        .toMap
+      existingSubscriptions <- packageIdsInSubscriptionWithEmail(EmailId(emailId))
+      pkgIdToExistingSubscriptions = existingSubscriptions.groupBy(_._2.packageId).view.mapValues(_.head).toMap
       insertedOrErr <- pkgs.traverse{pkg =>
-        pkgIdsToPkgsExistingSub.get(pkg.packageId) match {
-          case Some((subId, fullPackage)) =>
+        pkgIdToExistingSubscriptions.get(pkg.packageId) match {
+          case Some((subId, fullPackage, unsubscribeCode, existingConfirmationCode, confirmedTimeOpt)) =>
             Either.left[SubscriptionAlreadyExists, FullPackage](
-              SubscriptionAlreadyExists(subId, fullPackage, email)
+              SubscriptionAlreadyExists(subId, fullPackage, email, unsubscribeCode, existingConfirmationCode, confirmedTimeOpt)
             ).pure[ConnectionIO]
           case None =>
             insertIntoSubscriptions(emailId, pkg)

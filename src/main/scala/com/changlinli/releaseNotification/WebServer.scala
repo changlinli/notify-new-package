@@ -104,7 +104,7 @@ object WebServer extends CustomLogging {
     implicit val encodeAnityaProject: Encoder[RawAnityaProject] = deriveEncoder
   }
 
-  type ErrorTIO[A] = EitherT[IO, Error, A]
+  type ErrorTIO[A] = EitherT[IO, RequestProcessError, A]
 
   type UnexpectedFormatTIO[A] = EitherT[IO, AnityaProjectJsonWasInUnexpectedFormat, A]
 
@@ -150,7 +150,7 @@ object WebServer extends CustomLogging {
     client: Client[IO],
     anityaPackageEndpoint: Uri,
     itemsPerPage: Int
-  )(implicit contextShift: ContextShift[IO], timer: Timer[IO]): IO[Either[Error, NonEmptyList[RawAnityaProjectResultPage]]] = {
+  )(implicit contextShift: ContextShift[IO], timer: Timer[IO]): IO[Either[AnityaProjectJsonWasInUnexpectedFormat, NonEmptyList[RawAnityaProjectResultPage]]] = {
     val firstCall = requestProjectByPage(client, anityaPackageEndpoint, itemsPerPage, 1)
       .|>(EitherT.apply)
       .map(NonEmptyList.of(_))
@@ -180,32 +180,45 @@ object WebServer extends CustomLogging {
     client: Client[IO],
     anityaPackageEndpoint: Uri,
     itemsPerPage: Int
-  )(implicit contextShift: ContextShift[IO], timer: Timer[IO]): IO[Either[Error, List[RawAnityaProject]]] = {
+  )(implicit contextShift: ContextShift[IO], timer: Timer[IO]): IO[Either[AnityaProjectJsonWasInUnexpectedFormat, List[RawAnityaProject]]] = {
     requestAllAnityaProjectResultPages(client, anityaPackageEndpoint, itemsPerPage)
       .|>(EitherT.apply)
       .map(pages => pages.toList.flatMap(page => page.items))
       .value
   }
 
-  sealed trait Error extends Exception with Product with Serializable {
+  trait HumanReadableException extends Exception {
     val humanReadableMessage: String
 
     override def getMessage: String = humanReadableMessage
   }
-  final case class SubscriptionAlreadyExists(subscriptionId: SubscriptionId, pkg: FullPackage, emailAddress: EmailAddress)
+
+  sealed trait RequestProcessError extends HumanReadableException with Product with Serializable {
+    val humanReadableMessage: String
+
+    override def getMessage: String = humanReadableMessage
+  }
+  final case class SubscriptionAlreadyExists(
+    subscriptionId: SubscriptionId,
+    pkg: FullPackage,
+    emailAddress: EmailAddress,
+    packageUnsubscribeCode: UnsubscribeCode,
+    confirmationCode: ConfirmationCode,
+    confirmedTime: Option[Instant]
+  )
   final case class SubscriptionsAlreadyExistErr(
     allSubscriptionsThatAlreadyExist: NonEmptyList[SubscriptionAlreadyExists]
-  ) extends Error {
+  ) extends RequestProcessError {
     override val humanReadableMessage: String =
       s"Subscriptions already exist for the following package ID, package name, subscription ID, and email addresses: " +
         s"${allSubscriptionsThatAlreadyExist
           .map(sub => s"Package ID: ${sub.subscriptionId.toInt}, Package name: ${sub.pkg.name}, Subscription ID: ${sub.subscriptionId.toInt}, Email: ${sub.emailAddress.str}")}"
   }
-  final case class NoPackagesFoundForAnityaIds(anityaIds: NonEmptyList[AnityaId]) extends Error {
+  final case class NoPackagesFoundForAnityaIds(anityaIds: NonEmptyList[AnityaId]) extends RequestProcessError {
     override val humanReadableMessage: String =
       s"We were unable to find any packages corresponding to the following anitya IDs: ${anityaIds.map(_.toInt.toString).mkString(",")}"
   }
-  final case class AnityaProjectJsonWasInUnexpectedFormat(json: Json, error: DecodingFailure) extends Error {
+  final case class AnityaProjectJsonWasInUnexpectedFormat(json: Json, error: DecodingFailure) extends HumanReadableException {
     override val humanReadableMessage: String =
       s"The JSON passed ($json) in failed to decode properly. We saw the following error: ${error.message}"
   }
@@ -248,12 +261,12 @@ object WebServer extends CustomLogging {
 
   def processDatabaseResponse(
     email: EmailAddress,
-    resultOfSubscribe: Ior[NoPackagesFoundForAnityaIds, (NonEmptyList[(FullPackage, UnsubscribeCode)], ConfirmationCode)],
+    resultOfSubscribe: Ior[RequestProcessError, (NonEmptyList[(FullPackage, UnsubscribeCode)], ConfirmationCode)],
     emailSender: EmailSender,
     publicSiteName: Authority
   ): IO[Response[IO]] = {
     resultOfSubscribe match {
-      case Ior.Both(err @ NoPackagesFoundForAnityaIds(anityaIds), (pkgsWithUnsubscribeCodes, confirmationCode)) =>
+      case Ior.Both(err @ NoPackagesFoundForAnityaIds(_), (pkgsWithUnsubscribeCodes, confirmationCode)) =>
         val emailAction = emailSubscriptionConfirmationRequest(
           emailSender,
           email,
@@ -261,12 +274,40 @@ object WebServer extends CustomLogging {
           confirmationCode,
           publicSiteName
         )
-        IO(logger.warn(err))
+        IO(logger.warn("A request for non-existent Anitya IDs was received.", err))
+          .>>(emailAction)
+          .>>(Ok(HtmlGenerators.submittedFormWithSomeErrors(pkgsWithUnsubscribeCodes.map(_._1), err)))
+      case Ior.Both(err @ SubscriptionsAlreadyExistErr(alreadyExists), (pkgsWithUnsubscribeCodes, confirmationCode)) =>
+        // We're going to pretend that nothing went wrong with the HTTP response so that malicious users
+        // can't find out what packages an email address is subscribed to and
+        // we're just going to send a modified confirmation email
+        val emailAction = emailSomeSubscriptionAlreadyExistsSomeSubscriptionsAreNewConfirmationRequest(
+          emailSender,
+          email,
+          pkgsWithUnsubscribeCodes,
+          alreadyExists,
+          confirmationCode,
+          publicSiteName
+        )
+        IO(logger.warn("A user asked to subscribe to something he/she is already subscribed to", err))
           .>>(emailAction)
           .>>(Ok(HtmlGenerators.successfullySubmittedFrom(pkgsWithUnsubscribeCodes.map(_._1))))
-      case Ior.Left(err) =>
+      case Ior.Left(err @ NoPackagesFoundForAnityaIds(_)) =>
         logger.info(s"User sent in request that failed", err)
         BadRequest(s"You failed! ${err.humanReadableMessage}")
+      case Ior.Left(err @ SubscriptionsAlreadyExistErr(alreadyExists)) =>
+        val emailAction = emailSubscriptionAlreadyExistsConfirmationRequest(
+          emailSender,
+          email,
+          alreadyExists,
+          publicSiteName
+        )
+        logger.info(s"User sent in request that failed", err)
+        emailAction
+          // Note that we're not going to let a malicious user find out what
+          // packages an email address is subscribed to, so we're just
+          // returning an OK that seems to indicate everything was fine
+          .>>(Ok(HtmlGenerators.successfullySubmittedFrom(alreadyExists.map(_.pkg))))
       case Ior.Right((pkgsWithUnsubscribeCodes, confirmationCode)) =>
         val emailAction = emailSubscriptionConfirmationRequest(
           emailSender,
@@ -284,14 +325,16 @@ object WebServer extends CustomLogging {
     anityaIdsWithUnsubscribeCodes: NonEmptyList[(AnityaId, UnsubscribeCode)],
     currentTime: Instant,
     confirmationCode: ConfirmationCode
-  ): ConnectionIO[Ior[NoPackagesFoundForAnityaIds, (NonEmptyList[(FullPackage, UnsubscribeCode)], ConfirmationCode)]] = {
+  ): ConnectionIO[Ior[RequestProcessError, (NonEmptyList[(FullPackage, UnsubscribeCode)], ConfirmationCode)]] = {
     val unsubscribeCodes = anityaIdsWithUnsubscribeCodes.map(_._2)
     val getFullPackages = getFullPackagesFromSubscribeToPackages(
       email,
       anityaIdsWithUnsubscribeCodes.map(_._1)
     )
-    implicit val semigroupLeft: Semigroup[NoPackagesFoundForAnityaIds] =
-      Semigroup.instance[NoPackagesFoundForAnityaIds]{(a, _) => a}
+    implicit val semigroupLeft: Semigroup[RequestProcessError] =
+      Semigroup.instance[RequestProcessError]{
+        (a, _) => a
+      }
     IorT(getFullPackages)
       .map(fullPackages => fullPackages.zipWith(unsubscribeCodes)((_, _)))
       .flatMap{
@@ -302,8 +345,8 @@ object WebServer extends CustomLogging {
             currentTime,
             confirmationCode
           )
-          IorT
-            .right[NoPackagesFoundForAnityaIds](subscription)
+          IorT(subscription)
+            .leftWiden[RequestProcessError]
             .as(pkgsWithCode)
       }
       .map((_, confirmationCode))
@@ -475,6 +518,27 @@ object WebServer extends CustomLogging {
      """.stripMargin
   }
 
+  private def printPackageWithConfirmationCode(
+    pkg: FullPackage,
+    unsubscribeCode: UnsubscribeCode,
+    publicSiteName: Authority,
+    confirmationCode: ConfirmationCode
+  ): String = {
+    val releaseMonitoringLink = Uri(
+      scheme = Some(Scheme.https),
+      authority = Some(Authority(host = RegName("release-monitoring.org"))),
+      path = s"/project/${pkg.anityaId}/"
+    )
+    s"""
+       |Package Name: ${pkg.name.str}
+       |Package Homepage: ${pkg.homepage}
+       |Current Version: ${pkg.currentVersion.str}
+       |Confirmation Link: ${confirmationCode.generateConfirmationUri(publicSiteName).renderString}
+       |release-monitoring.org link (see the bottom of this email): ${releaseMonitoringLink.renderString}
+       |Unsubscribe link (see the bottom of this email): ${unsubscribeCode.generateUnsubscribeUri(publicSiteName).renderString}
+     """.stripMargin
+  }
+
   private def printPackage(
     pkg: FullPackage,
   ): String = {
@@ -491,6 +555,130 @@ object WebServer extends CustomLogging {
      """.stripMargin
   }
 
+  private def emailSomeSubscriptionAlreadyExistsSomeSubscriptionsAreNewConfirmationRequest(
+    emailSender: EmailSender,
+    emailAddress: EmailAddress,
+    packagesWithoutExistingSubscriptions: NonEmptyList[(FullPackage, UnsubscribeCode)],
+    packagesWithExistingSubscriptions: NonEmptyList[SubscriptionAlreadyExists],
+    confirmationCode: ConfirmationCode,
+    publicSiteName: Authority
+  ): IO[Unit] = {
+    val packagesAlreadySignedUp = packagesWithExistingSubscriptions.filter{err => err.confirmedTime.isDefined}
+    val packagesPendingConfirmation = packagesWithExistingSubscriptions.filter{err => err.confirmedTime.isEmpty}
+
+    val alreadySignedUpForMessage = {
+      s"Some of these subscription requests concern packages you've already successfully signed up for:\n\n" +
+        s"${packagesAlreadySignedUp
+          .map{err => (err.pkg, err.packageUnsubscribeCode)}
+          .map{case (p, unsubscribeCode) => printPackageWithUnsubscribe(p, unsubscribeCode, publicSiteName)}
+          .mkString("\n\n")}"
+    }
+    val packagesPendingConfirmMessage = {
+      s"Some of these subscriptions concern packages that are still awaiting confirmation:\n\n" +
+        s"${packagesPendingConfirmation
+          .map{err => (err.pkg, err.packageUnsubscribeCode, err.confirmationCode)}
+          .map{case (p, unsubscribeCode, confirmCode) => printPackageWithConfirmationCode(p, unsubscribeCode, publicSiteName, confirmCode)}
+          .mkString("\n\n")
+        }"
+    }
+    val newPackagesMessages = {
+      s"Some of these packages are new requests for subscriptions:\n\n" +
+        s"${packagesWithoutExistingSubscriptions
+          .map{case (p, unsubscribeCode) => printPackageWithUnsubscribe(p, unsubscribeCode, publicSiteName)}
+          .mkString("\n\n")
+        }"
+    }
+    val content =
+      s"""Hi, we've received a request to sign you up for email updates for some packages.
+         |
+         |However, it appears that you've already previously sent a request to sign up for email updates for some of these packages.
+         |
+         |${if (packagesAlreadySignedUp.nonEmpty) alreadySignedUpForMessage else ""}
+         |${if (packagesPendingConfirmation.nonEmpty) packagesPendingConfirmMessage else ""}
+         |$newPackagesMessages
+         |
+         |If these requests were from you, please confirm by opening this page in your web browser: ${confirmationCode.generateConfirmationUri(publicSiteName).renderString}.
+         |
+         |${
+        if (packagesPendingConfirmation.nonEmpty) {
+          "Note that this code only confirms you for these new subscriptions! " +
+            "If you have any pre-existing subscription requests that have yet to " +
+            "be confirmed should be confirmed by entering the links in the above " +
+            "listing of packages awaiting confirmation."
+        } else {
+          ""
+        }
+      }
+         |
+         |If that was not you, you can either ignore this email, or send an email to admin@${publicSiteName.host.renderString} if you'd like us to look into someone entering your email address without your permission.
+         |
+         |In the future if you'd like to unsubscribe to updates for a particular package, simply entering any of those unsubscribe links into your web browser will do the trick.
+         |
+         |Ultimately this service is built on top of Fedora's Anitya project (release-monitoring.org), so we've included a link to the release-monitoring.org page for this package.
+       """.stripMargin
+    val allPackageNames = packagesWithExistingSubscriptions
+      .map(_.pkg)
+      .++(packagesWithoutExistingSubscriptions.map(_._1).toList)
+      .map(_.name.str)
+    emailSender.email(
+      to = emailAddress,
+      subject = s"Request to sign you up for notifications about ${allPackageNames.mkString(",")}",
+      content = content
+    )
+  }
+
+  private def emailSubscriptionAlreadyExistsConfirmationRequest(
+    emailSender: EmailSender,
+    emailAddress: EmailAddress,
+    packagesWithExistingSubscriptions: NonEmptyList[SubscriptionAlreadyExists],
+    publicSiteName: Authority
+  ): IO[Unit] = {
+    val packagesAlreadySignedUp = packagesWithExistingSubscriptions.filter{err => err.confirmedTime.isDefined}
+    val packagesPendingConfirmation = packagesWithExistingSubscriptions.filter{err => err.confirmedTime.isEmpty}
+    val alreadySignedUpForMessage = {
+      if (packagesAlreadySignedUp.nonEmpty) {
+        s"These subscription requests concern packages you've already successfully signed up for:\n\n" +
+          s"${packagesAlreadySignedUp
+            .map{err => (err.pkg, err.packageUnsubscribeCode)}
+            .map{case (p, unsubscribeCode) => printPackageWithUnsubscribe(p, unsubscribeCode, publicSiteName)}
+            .mkString("\n\n")}"
+      } else {
+        ""
+      }
+    }
+    val packagesPendingConfirmMessage = {
+      if (packagesPendingConfirmation.nonEmpty) {
+        s"These subscriptions concern packages that are still awaiting confirmation (to confirm, open up the confirmation link in a web browser):\n\n" +
+          s"${packagesPendingConfirmation
+            .map{err => (err.pkg, err.packageUnsubscribeCode, err.confirmationCode)}
+            .map{case (p, unsubscribeCode, confirmCode) => printPackageWithConfirmationCode(p, unsubscribeCode, publicSiteName, confirmCode)}
+            .mkString("\n\n")
+          }"
+      } else {
+        ""
+      }
+    }
+    val content =
+      s"""Hi, we've received a request to sign you up for email updates for some packages.
+         |
+         |However, it appears that you've already previously sent a request to sign up for email updates for these packages.
+         |
+         |$alreadySignedUpForMessage
+         |$packagesPendingConfirmMessage
+         |
+         |If that was not you, you can either ignore this email, or send an email to admin@${publicSiteName.host.renderString} if you'd like us to look into someone entering your email address without your permission.
+         |
+         |In the future if you'd like to unsubscribe to updates for a particular package, simply entering any of those unsubscribe links into your web browser will do the trick.
+         |
+         |Ultimately this service is built on top of Fedora's Anitya project (release-monitoring.org), so we've included a link to the release-monitoring.org page for this package.
+       """.stripMargin
+    emailSender.email(
+      to = emailAddress,
+      subject = s"Request to sign you up for notifications about ${packagesWithExistingSubscriptions.map(_.pkg.name.str).mkString(",")}",
+      content = content
+    )
+  }
+
   private def emailSubscriptionConfirmationRequest(
     emailSender: EmailSender,
     emailAddress: EmailAddress,
@@ -499,7 +687,7 @@ object WebServer extends CustomLogging {
     publicSiteName: Authority
   ): IO[Unit] = {
     val content =
-      s"""Hi we've received a request to sign you up for email updates for new versions of the following packages:
+      s"""Hi, we've received a request to sign you up for email updates for new versions of the following packages:
          |
          |${packages.map{case (p, unsubscribeCode) => printPackageWithUnsubscribe(p, unsubscribeCode, publicSiteName)}.mkString("\n\n")}
          |
