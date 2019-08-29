@@ -3,3 +3,7 @@
   display: block;
   font-weight: bold;
 }
+
+.formInputElem {
+  visibility: hidden;
+}
