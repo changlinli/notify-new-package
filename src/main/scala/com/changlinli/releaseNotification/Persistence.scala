@@ -1,9 +1,6 @@
 package com.changlinli.releaseNotification
 
-import java.nio.charset.Charset
-import java.security.SecureRandom
 import java.time.Instant
-import java.util.Properties
 
 import cats.Id
 import cats.data.{Ior, Kleisli, NonEmptyList}
@@ -12,6 +9,7 @@ import cats.implicits._
 import com.changlinli.releaseNotification.Main.DependencyUpdate
 import com.changlinli.releaseNotification.WebServer._
 import com.changlinli.releaseNotification.data.{ConfirmationCode, EmailAddress, FullPackage, PackageName, PackageVersion, UnsubscribeCode}
+import com.changlinli.releaseNotification.errors.SubscriptionAlreadyExists
 import com.changlinli.releaseNotification.ids.{AnityaId, EmailId, PackageId, SubscriptionId}
 import doobie.{Transactor, _}
 import doobie.implicits._

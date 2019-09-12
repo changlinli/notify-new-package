@@ -2,7 +2,7 @@ package com.changlinli.releaseNotification
 
 import cats.data.NonEmptyList
 import cats.instances.all._
-import com.changlinli.releaseNotification.WebServer.RequestProcessError
+import com.changlinli.releaseNotification.errors.RequestProcessError
 import com.changlinli.releaseNotification.data.{ConfirmationCode, FullPackage, UnsubscribeCode}
 import scalatags.Text
 import scalatags.Text.all._

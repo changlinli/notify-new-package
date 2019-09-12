@@ -7,8 +7,8 @@ import cats.data.{Ior, NonEmptyList}
 import cats.effect.{Blocker, ContextShift, IO}
 import com.changlinli.releaseNotification.Main.DependencyUpdate
 import com.changlinli.releaseNotification.Persistence
-import com.changlinli.releaseNotification.WebServer.SubscriptionAlreadyExists
 import com.changlinli.releaseNotification.data.{ConfirmationCode, EmailAddress, FullPackage, PackageName, PackageVersion, UnsubscribeCode}
+import com.changlinli.releaseNotification.errors.SubscriptionAlreadyExists
 import com.changlinli.releaseNotification.ids.SubscriptionId
 import doobie.implicits._
 import doobie.scalatest.IOChecker

@@ -7,6 +7,7 @@ import cats.data._
 import cats.effect.{Blocker, ContextShift, Effect, IO, Timer}
 import cats.implicits._
 import com.changlinli.releaseNotification.data._
+import com.changlinli.releaseNotification.errors.{HumanReadableException, NoPackagesFoundForAnityaId, RequestProcessError, SubscriptionAlreadyExists}
 import com.changlinli.releaseNotification.ids.{AnityaId, SubscriptionId}
 import doobie.free.connection.ConnectionIO
 import doobie.implicits._
@@ -183,49 +184,6 @@ object WebServer extends CustomLogging {
       .|>(EitherT.apply)
       .map(pages => pages.toList.flatMap(page => page.items))
       .value
-  }
-
-  trait HumanReadableException extends Exception {
-    val humanReadableMessage: String
-
-    override def getMessage: String = humanReadableMessage
-  }
-
-  sealed trait RequestProcessError extends HumanReadableException with Product with Serializable {
-    val humanReadableMessage: String
-
-    override def getMessage: String = humanReadableMessage
-  }
-  final case class SubscriptionAlreadyExists(
-    subscriptionId: SubscriptionId,
-    pkg: FullPackage,
-    emailAddress: EmailAddress,
-    packageUnsubscribeCode: UnsubscribeCode,
-    confirmationCode: ConfirmationCode,
-    confirmedTime: Option[Instant]
-  ) extends RequestProcessError {
-    override val humanReadableMessage: String =
-      s"A subscription already exists for the following package ID, package name, subscription ID, and email addresses: " +
-        s"Package ID: ${subscriptionId.toInt}, Package name: ${pkg.name}, Subscription ID: ${subscriptionId.toInt}, Email: ${emailAddress.str}"
-  }
-  final case class NoPackagesFoundForAnityaId(anityaId: AnityaId) extends RequestProcessError {
-    override val humanReadableMessage: String =
-      s"We were unable to find any packages corresponding to the following anitya ID: ${anityaId.toInt}"
-  }
-
-  object RequestProcessError {
-    def splitErrors(errors: List[RequestProcessError]): (List[SubscriptionAlreadyExists], List[NoPackagesFoundForAnityaId]) = {
-      errors.foldLeft((List.empty[SubscriptionAlreadyExists], List.empty[NoPackagesFoundForAnityaId])){
-        case ((subscriptionAlreadyExistsErrs, noPackagesFoundForAnityaIdErrs), newErr) =>
-          newErr match {
-            case subscriptionAlreadyExistsErr: SubscriptionAlreadyExists =>
-              (subscriptionAlreadyExistsErr :: subscriptionAlreadyExistsErrs, noPackagesFoundForAnityaIdErrs)
-            case noPackagesFoundErr: NoPackagesFoundForAnityaId =>
-              (subscriptionAlreadyExistsErrs, noPackagesFoundErr :: noPackagesFoundForAnityaIdErrs)
-          }
-      }
-    }
-
   }
 
   final case class AnityaProjectJsonWasInUnexpectedFormat(json: Json, error: DecodingFailure) extends HumanReadableException {
