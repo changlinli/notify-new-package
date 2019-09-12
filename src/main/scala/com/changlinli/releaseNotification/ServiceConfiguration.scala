@@ -1,13 +1,18 @@
 package com.changlinli.releaseNotification
 
+import java.util.UUID
+
 import cats.effect.{Effect, IO}
 import cats.implicits._
 import com.changlinli.releaseNotification.data.EmailAddress
+import dev.profunktor.fs2rabbit.model.QueueName
 import org.http4s.Uri
 import org.http4s.Uri.{Authority, Host, Ipv4Address, Ipv6Address, RegName}
 import org.http4s.syntax.all._
 import org.http4s.util.CaseInsensitiveString
 import scopt.OptionParser
+
+import scala.util.Try
 
 sealed trait DatabaseCreationOption
 case object CreateFromScratch extends DatabaseCreationOption
@@ -26,7 +31,8 @@ final case class ServiceConfiguration(
   anityaUrl: Uri = uri"https://release-monitoring.org",
   rebuildPackageDatabase: PackageDatabaseOption = DoNotBulkDownloadPackageDatabase,
   adminEmailRedirect: EmailAddress = EmailAddress.unsafeFromString("example@example.com"),
-  sendGridAPIKey: String = "unknownApiKey"
+  sendGridAPIKey: String = "unknownApiKey",
+  rabbitMQQueueName: QueueName = QueueName("00000000-0000-0000-0000-000000000000")
 )
 
 object ServiceConfiguration {
@@ -37,6 +43,20 @@ object ServiceConfiguration {
   }
   val cmdLineOptionParser: OptionParser[ServiceConfiguration] = new scopt.OptionParser[ServiceConfiguration]("notify-new-package") {
     head("notify-new-package", "0.0.1")
+
+    opt[String]('q', "rabbitmq-queue-name")
+      .required()
+      .validate{
+        str =>
+          Try(UUID.fromString(str))
+            .fold(
+              _ => failure(s"$str was not a valid UUID string!"),
+              _ => success
+            )
+      }
+      .action{(queueNameStr, config) => config.copy(rabbitMQQueueName = QueueName(queueNameStr))}
+      .text("To interface with Fedora's infrastructure, according to its documentation" +
+        ", this should be a UUID.")
 
     opt[String]('s', "sendgrid-api-key")
       .required()

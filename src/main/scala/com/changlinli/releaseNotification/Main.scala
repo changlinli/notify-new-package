@@ -80,8 +80,6 @@ object Main extends MyIOApp with Logging {
     )
   } yield fs2Rabbit
 
-  val queueName = QueueName("049ab00b-c653-4112-a6e3-d921aaf90ec9")
-
   val exchangeName = ExchangeName("amq.topic")
 
   val routingKey = RoutingKey("#")
@@ -172,16 +170,16 @@ object Main extends MyIOApp with Logging {
       val runRabbitListener = for {
         _ <- fs2Rabbit.declareQueue(
           DeclarationQueueConfig(
-            queueName = queueName,
+            queueName = cmdLineOpts.rabbitMQQueueName,
             durable = Durable,
             exclusive = NonExclusive,
             autoDelete = NonAutoDelete,
             arguments = Map.empty
           )
         )
-        _ <- fs2Rabbit.bindQueue(queueName, exchangeName, routingKey)
+        _ <- fs2Rabbit.bindQueue(cmdLineOpts.rabbitMQQueueName, exchangeName, routingKey)
         consumer <- fs2Rabbit.createAutoAckConsumer[Json](
-          queueName = queueName
+          queueName = cmdLineOpts.rabbitMQQueueName
         )
         _ <- RabbitMQListener.consumeRabbitMQ(consumer, doobieTransactor, emailSender)
           .compile
