@@ -102,6 +102,7 @@ object HtmlGenerators {
   def submittedFormWithSomeErrors(packages: NonEmptyList[FullPackage], errors: NonEmptyList[RequestProcessError]): Text.TypedTag[String] = {
     // If a new member is added to the tuple here, you must add a new else if clause below!
     val (subscriptionAlreadyExists, noPackagesFoundForAnityaId) = RequestProcessError.splitErrors(errors.toList)
+    val allPackages = packages ++ subscriptionAlreadyExists.map(_.pkg)
     if (noPackagesFoundForAnityaId.nonEmpty) {
       insertIntoBody(
         div(
@@ -112,17 +113,15 @@ object HtmlGenerators {
           p(
             s"Here are the packages whose requests for subscription we successfully processed:"
           ),
-          // We sort because we don't want to leak any information about which
-          // packages an email address is subscribed to, except in emails. We
-          // always want a user to think that all packages have been
-          // subscribed to, so we combine all packages together.
-          formatAllPackages(SanitizedList.fromList(subscriptionAlreadyExists.map(_.pkg) ++ packages.toList))
+          // We always want a user to think that all packages have been
+          // subscribed to, so we state all packages have been successfully processed.
+          formatAllPackages(SanitizedList.fromList(allPackages.toList))
         )
       )
     } else if (subscriptionAlreadyExists.nonEmpty) {
-      // We know this is safe because of the if check
-      val nonEmptySubscriptionAlreadyExists = NonEmptyList.fromListUnsafe(subscriptionAlreadyExists)
-      successfullySubmittedFrom(nonEmptySubscriptionAlreadyExists.map(_.pkg) ++ packages.toList)
+      // We always want a user to think that all packages have been
+      // subscribed to, so we state all packages have been successfully processed.
+      successfullySubmittedFrom(allPackages)
     } else {
       throw new Exception(
         s"This is a programmer bug! We should have included all possible non-empty " +

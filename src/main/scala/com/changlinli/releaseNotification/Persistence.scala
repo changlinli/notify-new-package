@@ -287,8 +287,48 @@ object Persistence extends CustomLogging {
       }
   }
 
-  def insertIntoEmailTableIfNotExist(email: EmailAddress): doobie.Update0 = {
-    sql"""INSERT OR IGNORE INTO `emails` (emailAddress) VALUES (${email.str})""".updateWithLogHandler(doobieLogHandler)
+  def insertIntoEmailTableIfNotExist(email: EmailAddress): ConnectionIO[EmailId] = {
+    for {
+      _ <- sql"""INSERT OR IGNORE INTO `emails` (emailAddress) VALUES (${email.str})"""
+        .updateWithLogHandler(doobieLogHandler)
+        .run
+      emailAddressId <- sql"""SELECT `id` FROM `emails` WHERE emailAddress = ${email.str}"""
+        .queryWithLogHandler[Int](doobieLogHandler)
+        .to[List]
+        .map{
+          _.headOption.getOrElse{
+            throw new Exception(
+              s"This is a programming bug! Because we just inserted an email in " +
+                s"this transaction, it must be non-empty!"
+            )
+          }
+        }
+    } yield EmailId(emailAddressId)
+  }
+
+  def insertIntoSubscriptionsIfNotExist(
+    emailId: EmailId,
+    pkg: FullPackage,
+    currentTime: Instant,
+    confirmationCode: ConfirmationCode
+  ): ConnectionIO[SubscriptionId] = {
+
+    for {
+      _ <- sql"""INSERT OR IGNORE INTO `subscriptions` (emailId, packageId, createdTime, confirmationCode) VALUES
+         |(${emailId.toInt}, ${pkg.packageId}, ${currentTime.getEpochSecond}, ${confirmationCode.str}) """.stripMargin
+        .updateWithLogHandler(doobieLogHandler)
+        .run
+      subscriptionId <- sql"""SELECT `id` FROM `subscriptions` WHERE emailId = ${emailId.toInt} AND packageId=${pkg.packageId}"""
+        .queryWithLogHandler[Int](doobieLogHandler)
+        .to[List]
+        .map{
+        _.headOption
+          .getOrElse(throw new Exception(
+            s"This is a programming bug! Because we just inserted the subscription " +
+              s"in this transaction (or verified that this subscription already exists!)"
+          ))
+      }
+    } yield SubscriptionId(subscriptionId)
   }
 
   def packageIdsInSubscriptionWithEmail(email: EmailId): doobie.ConnectionIO[List[(SubscriptionId, FullPackage, UnsubscribeCode, ConfirmationCode, Option[Instant])]] = {
@@ -326,58 +366,42 @@ object Persistence extends CustomLogging {
     confirmationCode: ConfirmationCode
   ): ConnectionIO[Ior[NonEmptyList[SubscriptionAlreadyExists], Int]] = {
     val pkgs = pkgsWithUnsubscribeCodes.map(_._1)
-    val retrieveEmailId =
-      sql"""SELECT `id` FROM `emails` WHERE emailAddress = ${email.str}"""
-    def insertIntoSubscriptions(emailId: Int, pkg: FullPackage) =
-      sql"""INSERT OR IGNORE INTO `subscriptions` (emailId, packageId, createdTime, confirmationCode) VALUES
-           |($emailId, ${pkg.packageId}, ${currentTime.getEpochSecond}, ${confirmationCode.str}) """.stripMargin
-    def retrieveSubscriptionId(emailId: Int, pkgId: PackageId) =
-      sql"""SELECT `id` FROM `subscriptions` WHERE emailId = $emailId AND packageId=${pkgId.toInt}"""
     for {
-      _ <- insertIntoEmailTableIfNotExist(email).run
-      // FIXME: This should be a fatal error, but we should have a better error message
-      emailId <- retrieveEmailId.queryWithLogHandler[Int](doobieLogHandler).to[List].map{
-        case id :: _ => id
-        case Nil => throw new Exception(s"This is a programming bug! Because we just inserted an email in this transaction")
-      }
-      existingSubscriptions <- packageIdsInSubscriptionWithEmail(EmailId(emailId))
+      emailId <- insertIntoEmailTableIfNotExist(email)
+      existingSubscriptions <- packageIdsInSubscriptionWithEmail(emailId)
       pkgIdToExistingSubscriptions = existingSubscriptions.groupBy(_._2.packageId).view.mapValues(_.head).toMap
-      insertedOrErr <- pkgs.traverse{pkg =>
+      insertedOrErr <- pkgs.traverse{ pkg =>
         pkgIdToExistingSubscriptions.get(pkg.packageId) match {
           case Some((subId, fullPackage, unsubscribeCode, existingConfirmationCode, confirmedTimeOpt)) =>
-            Either.left[SubscriptionAlreadyExists, FullPackage](
+            Either.left[SubscriptionAlreadyExists, (FullPackage, SubscriptionId)](
               SubscriptionAlreadyExists(subId, fullPackage, email, unsubscribeCode, existingConfirmationCode, confirmedTimeOpt)
             ).pure[ConnectionIO]
           case None =>
-            insertIntoSubscriptions(emailId, pkg)
-              .updateWithLogHandler(doobieLogHandler)
-              .run
-              .as(Either.right[SubscriptionAlreadyExists, FullPackage](pkg))
+            insertIntoSubscriptionsIfNotExist(emailId, pkg, currentTime, confirmationCode)
+              .map(subId => Either.right[SubscriptionAlreadyExists, (FullPackage, SubscriptionId)]((pkg, subId)))
         }
       }
-      insertedPkgs = insertedOrErr.collect{case Right(pkg) => pkg}.toSet
-      insertedPkgsWithUnsubscribeCodes = pkgsWithUnsubscribeCodes.filter{case (pkg, _) => insertedPkgs.contains(pkg)}
+      _ = logger.debug(
+        s"Email address ${email.str} subscribed to the these packages with unsubscribe " +
+          s"codes: $pkgsWithUnsubscribeCodes resulting in $insertedOrErr"
+      )
+      insertedPkgs = insertedOrErr.collect{case Right(pkgAndSubId) => pkgAndSubId}
+      insertedPkgsMap = insertedPkgs.groupByNel(_._1).view.mapValues(_.head._2).toMap
+      insertedPkgsWithUnsubscribeCodes = pkgsWithUnsubscribeCodes
+        .map{
+          case (pkg, unsubscribeCode) => insertedPkgsMap.get(pkg).map((unsubscribeCode, _))
+        }
+        .collect{case Some(x) => x}
       _ <- insertedPkgsWithUnsubscribeCodes
         .traverse{
-          case (pkg, unsubscribeCode) => retrieveSubscriptionId(emailId, PackageId(pkg.packageId))
-            .queryWithLogHandler[Int](doobieLogHandler)
-            .to[List]
-            // FIXME: This should be a fatal error, but we should have a better error message
-            .map{
-              _.headOption
-                .getOrElse(throw new Exception(s"This is a programming bug! Because we just inserted the subscription in this transaction (or verified that this subscription already exists!)"))
-            }
-            .map((_, unsubscribeCode))
-        }
-        .flatMap{
-          subscriptionIds => subscriptionIds
-            .traverse{case (subscriptionId, unsubscribeCode) => createUnsubscribeCodeQuery(unsubscribeCode, SubscriptionId(subscriptionId)).run}
+          case (unsubscribeCode, subscriptionId) =>
+            createUnsubscribeCodeQuery(unsubscribeCode, subscriptionId).run
         }
     } yield {
       insertedOrErr
         .traverse{
           case Left(err) => Ior.leftNel[SubscriptionAlreadyExists, FullPackage](err)
-          case Right(pkg) => Ior.right[NonEmptyList[SubscriptionAlreadyExists], FullPackage](pkg)
+          case Right((pkg, _)) => Ior.right[NonEmptyList[SubscriptionAlreadyExists], FullPackage](pkg)
         }
         .map(_.length)
     }

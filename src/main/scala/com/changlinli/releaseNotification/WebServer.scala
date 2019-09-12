@@ -242,7 +242,7 @@ object WebServer extends CustomLogging {
           confirmationCode,
           publicSiteName
         )
-        IO(err.map(logger.warn("We saw the following error by a user", _)))
+        IO(err.map(logger.warn("We saw the following error by a user (while other actions were successful)", _)))
           .>>(emailAction)
           .>>(Ok(HtmlGenerators.submittedFormWithSomeErrors(pkgsWithUnsubscribeCodes.map(_.pkg), err)))
       case Ior.Left(err) =>
