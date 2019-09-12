@@ -3,6 +3,7 @@ package com.changlinli.releaseNotification
 import cats.effect.{ContextShift, IO}
 import cats.implicits._
 import com.changlinli.releaseNotification.data.PackageVersion
+import com.changlinli.releaseNotification.errors.{IncorrectRoutingKey, PayloadParseFailure, RabbitMQListenerError}
 import com.changlinli.releaseNotification.ids.AnityaId
 import dev.profunktor.fs2rabbit.model.{AmqpEnvelope, RoutingKey}
 import doobie.implicits._
@@ -16,7 +17,7 @@ object RabbitMQListener extends CustomLogging {
     RoutingKey("org.release-monitoring.prod.anitya.project.edit")
   )
 
-  private def parseEnvelope(envelope: AmqpEnvelope[Json]): Either[AppError, JsonPayloadParseResult] = {
+  private def parseEnvelope(envelope: AmqpEnvelope[Json]): Either[RabbitMQListenerError, JsonPayloadParseResult] = {
     val routingKeySeen = envelope.routingKey
     if (anityaRoutingKeys.contains(routingKeySeen)) {
       envelope.payload.as[JsonPayloadParseResult].left.map(PayloadParseFailure(_, envelope.payload))

@@ -7,7 +7,7 @@ import cats.data._
 import cats.effect.{Blocker, ContextShift, Effect, IO, Timer}
 import cats.implicits._
 import com.changlinli.releaseNotification.data._
-import com.changlinli.releaseNotification.errors.{HumanReadableException, NoPackagesFoundForAnityaId, RequestProcessError, SubscriptionAlreadyExists}
+import com.changlinli.releaseNotification.errors.{AnityaProjectJsonWasInUnexpectedFormat, HumanReadableException, NoPackagesFoundForAnityaId, RequestProcessError, SubscriptionAlreadyExists}
 import com.changlinli.releaseNotification.ids.{AnityaId, SubscriptionId}
 import doobie.free.connection.ConnectionIO
 import doobie.implicits._
@@ -77,126 +77,8 @@ object WebServer extends CustomLogging {
     case changeEmail: ChangeEmail => changeEmail
   }
 
-  final case class RawAnityaProjectResultPage(
-    items: List[RawAnityaProject],
-    items_per_page: Int,
-    page: Int,
-    total_items: Int
-  )
-
-  object RawAnityaProjectResultPage {
-    import io.circe.generic.semiauto._
-    implicit val decodeAnityaProjectResultPage: Decoder[RawAnityaProjectResultPage] = deriveDecoder
-    implicit val encodeAnityaProjectResultPage: Encoder[RawAnityaProjectResultPage] = deriveEncoder
-  }
-
-  final case class RawAnityaProject(
-    backend: String,
-    created_on: BigDecimal,
-    ecosystem: String,
-    homepage: String,
-    id: Int,
-    name: String,
-    regex: Option[String],
-    updated_on: BigDecimal,
-    version: Option[String],
-    version_url: Option[String],
-    versions: List[String]
-  )
-
-  object RawAnityaProject {
-    import io.circe.generic.semiauto._
-    implicit val decodeAnityaProject: Decoder[RawAnityaProject] = deriveDecoder
-    implicit val encodeAnityaProject: Encoder[RawAnityaProject] = deriveEncoder
-  }
-
   type ErrorTIO[A] = EitherT[IO, RequestProcessError, A]
 
-  type UnexpectedFormatTIO[A] = EitherT[IO, AnityaProjectJsonWasInUnexpectedFormat, A]
-
-  private def liftToErrorT[A](x: IO[A]): ErrorTIO[A] = EitherT.liftF(x)
-
-  def requestProjectByPage(
-    client: Client[IO],
-    anityaPackageEndpoint: Uri,
-    itemsPerPage: Int,
-    currentPageIdx: Int
-  )(implicit contextShift: ContextShift[IO]): IO[Either[AnityaProjectJsonWasInUnexpectedFormat, RawAnityaProjectResultPage]] = {
-    val requestUrl = anityaPackageEndpoint / "api" / "v2" / "projects" / "" +? ("items_per_page", itemsPerPage) +? ("page", currentPageIdx)
-    val request = Request[IO](Method.GET, requestUrl)
-    logger.info(s"WE'RE REQUESTING A PROJECT BY PAGE... for this url: $requestUrl")
-    val clientRequest = client.fetchAs[String](request)
-    implicit val timer: Timer[IO] = ThreadPools.timer
-    clientRequest
-      .flatTap(str => IO(logger.debug(s"This is what came out of our request! $str")))
-      .attempt
-      .flatMap{
-        strOrErr =>
-          logger.debug(s"This is the raw string: $strOrErr")
-          strOrErr
-            .fold[IO[String]](IO.raiseError, x => IO(x))
-            .map(io.circe.parser.parse)
-            .flatMap(_.fold(IO.raiseError, x => IO(x)))
-      }
-      .attempt
-      .flatMap{
-        case Right(json) =>
-          logger.info(s"Received ${json.noSpaces.length} characters of JSON")
-          logger.debug(s"Received this JSON from the Anitya web server about packages: $json")
-          val decodeResult = Decoder[RawAnityaProjectResultPage].decodeJson(json).leftMap(AnityaProjectJsonWasInUnexpectedFormat(json, _))
-          IO(logger.debug(s"THIS WAS THE RESULT AFTER DECODING: $decodeResult")) *>
-            IO(decodeResult)
-        case Left(err) =>
-          logger.error("We blew up!", err)
-          IO.raiseError(err)
-      }
-  }
-
-  def requestAllAnityaProjectResultPages(
-    client: Client[IO],
-    anityaPackageEndpoint: Uri,
-    itemsPerPage: Int
-  )(implicit contextShift: ContextShift[IO], timer: Timer[IO]): IO[Either[AnityaProjectJsonWasInUnexpectedFormat, NonEmptyList[RawAnityaProjectResultPage]]] = {
-    val firstCall = requestProjectByPage(client, anityaPackageEndpoint, itemsPerPage, 1)
-      .|>(EitherT.apply)
-      .map(NonEmptyList.of(_))
-    val result = for {
-      firstResult <- firstCall
-      allPages <- cats.Monad[UnexpectedFormatTIO].iterateWhileM(firstResult){
-        pages =>
-          val lastPage = pages.head
-          val webRequest =
-            requestProjectByPage(client, anityaPackageEndpoint, itemsPerPage, lastPage.page + 1)
-              .|>(EitherT.apply)
-              .map(_ :: pages)
-          // To make sure we don't overwhelm the web server
-          val sleep =  EitherT.liftF[IO, AnityaProjectJsonWasInUnexpectedFormat, Unit](IO(logger.info("Briefly sleeping to avoid overloading the Anitya server")) *> IO.sleep(FiniteDuration(1, TimeUnit.SECONDS)))
-          webRequest <* sleep
-      }{ pages =>
-        val currentPage = pages.head
-        val numOfRemainingItems = currentPage.total_items - currentPage.items_per_page * currentPage.page
-        logger.info(s"We have this many packages left to retrieve from Anitya: $numOfRemainingItems")
-        numOfRemainingItems > 0
-      }
-    } yield allPages
-    result.value
-  }
-
-  def requestAllAnityaProjects(
-    client: Client[IO],
-    anityaPackageEndpoint: Uri,
-    itemsPerPage: Int
-  )(implicit contextShift: ContextShift[IO], timer: Timer[IO]): IO[Either[AnityaProjectJsonWasInUnexpectedFormat, List[RawAnityaProject]]] = {
-    requestAllAnityaProjectResultPages(client, anityaPackageEndpoint, itemsPerPage)
-      .|>(EitherT.apply)
-      .map(pages => pages.toList.flatMap(page => page.items))
-      .value
-  }
-
-  final case class AnityaProjectJsonWasInUnexpectedFormat(json: Json, error: DecodingFailure) extends HumanReadableException {
-    override val humanReadableMessage: String =
-      s"The JSON passed ($json) in failed to decode properly. We saw the following error: ${error.message}"
-  }
 
   def getFullPackagesFromSubscribeToPackages(
     email: EmailAddress,

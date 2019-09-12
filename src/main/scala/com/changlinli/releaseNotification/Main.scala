@@ -2,10 +2,9 @@ package com.changlinli.releaseNotification
 
 import java.io.FileInputStream
 import java.security.{KeyStore, SecureRandom}
-import java.util.concurrent.TimeUnit
 
 import cats.data.{Kleisli, NonEmptyList}
-import cats.effect.{ConcurrentEffect, ExitCode, IO, Timer}
+import cats.effect.{ConcurrentEffect, ExitCode, IO}
 import cats.implicits._
 import com.rabbitmq.client.DefaultSaslConfig
 import dev.profunktor.fs2rabbit.config.declaration.{DeclarationQueueConfig, Durable, NonAutoDelete, NonExclusive}
@@ -13,17 +12,13 @@ import dev.profunktor.fs2rabbit.config.{Fs2RabbitConfig, Fs2RabbitNodeConfig}
 import dev.profunktor.fs2rabbit.effects.EnvelopeDecoder
 import dev.profunktor.fs2rabbit.interpreter.Fs2Rabbit
 import dev.profunktor.fs2rabbit.model
-import dev.profunktor.fs2rabbit.model.{AmqpEnvelope, ExchangeName, QueueName, RoutingKey}
+import dev.profunktor.fs2rabbit.model.{AmqpEnvelope, ExchangeName, RoutingKey}
 import doobie.implicits._
-import doobie.util.transactor.Transactor
 import grizzled.slf4j.Logging
-import io.circe.Decoder.Result
-import io.circe.{Decoder, DecodingFailure, HCursor, Json}
+import io.circe.Json
 import javax.net.ssl.{KeyManagerFactory, SSLContext, TrustManagerFactory}
-import org.http4s._
-import org.http4s.client.{Client, JavaNetClientBuilder}
+import org.http4s.client.JavaNetClientBuilder
 
-import scala.concurrent.duration.FiniteDuration
 import scala.language.higherKinds
 
 object Main extends MyIOApp with Logging {
@@ -84,48 +79,6 @@ object Main extends MyIOApp with Logging {
 
   val routingKey = RoutingKey("#")
 
-
-  def processAllAnityaProjects(
-    client: Client[IO],
-    anityaPackageEndpoint: Uri,
-    itemsPerPage: Int,
-    transactor: Transactor[IO]
-  )(implicit timer: Timer[IO]): IO[Unit] = {
-    fs2.Stream.unfoldEval(1){ page =>
-      logger.info(s"Processing page number: $page")
-      val processSingleProjectPage = WebServer
-        .requestProjectByPage(client, anityaPackageEndpoint, itemsPerPage, page)
-        .flatMap{
-          _.traverse{
-            pageOfResults =>
-              logger.info(s"About to persist ${pageOfResults.items.length} Anitya packages")
-              logger.debug(s"About to persist this: $pageOfResults")
-              pageOfResults
-                .items
-                .traverse(Persistence.persistRawAnityaProject)
-                .transact(transactor)
-                .as(pageOfResults)
-          }
-        }
-      processSingleProjectPage.map{
-        case Right(resultPage) =>
-          if (resultPage.items_per_page * page < resultPage.total_items) {
-            Some(((), page + 1))
-          } else {
-            None
-          }
-        case Left(err) =>
-          logger.error(s"We blew up when doing processing an Anitya page!", err)
-          Some((), page)
-      }
-    }
-      .map(Right.apply)
-      .interleave(fs2.Stream.sleep(FiniteDuration(1, TimeUnit.SECONDS)).repeat.map(Left.apply))
-      .collect{case Right(x) => x}
-      .compile
-      .drain
-  }
-
   override def run(args: List[String]): IO[ExitCode] = for {
     cmdLineOpts <- ServiceConfiguration.parseCommandLineOptions(args)
     _ <- IO(System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, LogLevel.toSLF4JString(cmdLineOpts.logLevel)))
@@ -159,7 +112,7 @@ object Main extends MyIOApp with Logging {
           .compile
           .drain
       } yield ()
-      val processAnityaInBackground = processAllAnityaProjects(blazeClient, cmdLineOpts.anityaUrl, 100, doobieTransactor)
+      val processAnityaInBackground = PackageDownloader.processAllAnityaProjects(blazeClient, cmdLineOpts.anityaUrl, 100, doobieTransactor)
       for {
         _ <- cmdLineOpts.databaseCreationOpt match {
           case PreexistingDatabase => IO.unit

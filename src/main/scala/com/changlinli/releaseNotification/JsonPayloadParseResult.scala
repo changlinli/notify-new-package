@@ -79,7 +79,7 @@ final case class DependencyUpdate(
   def printEmailTitle: String = s"Package $packageName was just upgraded from " +
     s"version $previousVersion to $packageVersion"
 
-  def printEmailBody: String = s"Package $packageName was just upgraded from " +
+  def printEmailBody: String = s"The package $packageName was just upgraded from " +
     s"version $previousVersion to $packageVersion. Check out its homepage " +
     s"$homepage for more details."
 }
