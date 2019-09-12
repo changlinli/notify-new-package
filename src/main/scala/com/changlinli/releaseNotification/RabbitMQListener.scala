@@ -21,7 +21,7 @@ object RabbitMQListener extends CustomLogging {
     if (anityaRoutingKeys.contains(routingKeySeen)) {
       envelope.payload.as[JsonPayloadParseResult].left.map(PayloadParseFailure(_, envelope.payload))
     } else {
-      logger.info(s"Throwing away payload because routing key was ${routingKeySeen.value}")
+      logger.debug(s"Throwing away payload because routing key was ${routingKeySeen.value}")
       Left(IncorrectRoutingKey(routingKeySeen))
     }
   }

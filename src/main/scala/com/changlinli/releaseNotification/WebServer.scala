@@ -127,13 +127,12 @@ object WebServer extends CustomLogging {
     logger.info(s"WE'RE REQUESTING A PROJECT BY PAGE... for this url: $requestUrl")
     val clientRequest = client.fetchAs[String](request)
     implicit val timer: Timer[IO] = ThreadPools.timer
-    IO.race(clientRequest, IO.sleep(FiniteDuration(5, TimeUnit.SECONDS)) *> IO.raiseError(new Exception("WEIORAOIWEJROIR")))
-      .map(_.fold(identity, identity))
-      .flatTap(str => IO(logger.info(s"This is what came out of our request! $str")))
+    clientRequest
+      .flatTap(str => IO(logger.debug(s"This is what came out of our request! $str")))
       .attempt
       .flatMap{
         strOrErr =>
-          logger.info(s"WETIAWEIOTIAWOEHTAWE: $strOrErr")
+          logger.debug(s"This is the raw string: $strOrErr")
           strOrErr
             .fold[IO[String]](IO.raiseError, x => IO(x))
             .map(io.circe.parser.parse)
@@ -142,9 +141,10 @@ object WebServer extends CustomLogging {
       .attempt
       .flatMap{
         case Right(json) =>
-          logger.info(s"Received this JSON from the Anitya web server about packages: $json")
+          logger.info(s"Received ${json.noSpaces.length} characters of JSON")
+          logger.debug(s"Received this JSON from the Anitya web server about packages: $json")
           val decodeResult = Decoder[RawAnityaProjectResultPage].decodeJson(json).leftMap(AnityaProjectJsonWasInUnexpectedFormat(json, _))
-          IO(logger.info(s"THIS WAS THE RESULT AFTER DECODING: $decodeResult")) *>
+          IO(logger.debug(s"THIS WAS THE RESULT AFTER DECODING: $decodeResult")) *>
             IO(decodeResult)
         case Left(err) =>
           logger.error("We blew up!", err)
