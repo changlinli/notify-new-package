@@ -5,6 +5,7 @@ import java.util.concurrent.Executors
 
 import cats.data.{Ior, NonEmptyList}
 import cats.effect.{Blocker, ContextShift, IO}
+import com.changlinli.releaseNotification.Main.DependencyUpdate
 import com.changlinli.releaseNotification.Persistence
 import com.changlinli.releaseNotification.WebServer.{SubscriptionAlreadyExists, SubscriptionsAlreadyExistErr}
 import com.changlinli.releaseNotification.data.{ConfirmationCode, EmailAddress, FullPackage, PackageName, PackageVersion, UnsubscribeCode}
@@ -164,6 +165,39 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
       unsubscribeCodeOpt <- Persistence.getUnsubscribeCodeForSubscription(SubscriptionId(1))
     } yield unsubscribeCodeOpt
     action.transact(transactor).unsafeRunSync() should be (Some(UnsubscribeCode.unsafeFromString("unsubscribeString")))
+  }
+  it should "succeed in creating a new package when a DependencyUpdate comes in for a non-existent package" in {
+    val action = for {
+      _ <- Persistence.initializeDatabase
+      _ <- Persistence.updatePackage(
+        DependencyUpdate(
+          packageName = "hello",
+          packageVersion = "0.01",
+          previousVersion = "0.00",
+          homepage = "example.com",
+          anityaId = 1
+        )
+      )
+      results <- Persistence.retrievePackageByAnityaIdQuery(1).to[List]
+    } yield results
+    action.transact(transactor).unsafeRunSync().length should be (1)
+  }
+  it should "not create a new package when a DependencyUpdate comes in for a pre-existing package" in {
+    val action = for {
+      _ <- Persistence.initializeDatabase
+      _ <- Persistence.upsertPackage("hello", "hello.com", 1, PackageVersion("1.0"))
+      _ <- Persistence.updatePackage(
+        DependencyUpdate(
+          packageName = "hello",
+          packageVersion = "2.0",
+          previousVersion = "1.0",
+          homepage = "example.com",
+          anityaId = 1
+        )
+      )
+      results <- Persistence.retrievePackageByAnityaIdQuery(1).to[List]
+    } yield results
+    action.transact(transactor).unsafeRunSync().map{case (_, _, _, anityaId, currentVersion) => (anityaId, currentVersion)} should be (List((1, "2.0")))
   }
 
   override def transactor: doobie.Transactor[IO] = Persistence.createTransactorRaw(":memory:", connectionExecutionContext, blocker)

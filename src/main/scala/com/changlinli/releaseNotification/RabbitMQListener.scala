@@ -26,6 +26,37 @@ object RabbitMQListener extends CustomLogging {
     }
   }
 
+  private def sendEmailAboutDependencyUpdate(
+    update: DependencyUpdate,
+    doobieTransactor: Transactor[IO],
+    emailSender: EmailSender
+  )(implicit contextShift: ContextShift[IO]): IO[Unit] = {
+    for {
+      _ <- Persistence.updatePackageVersion(
+        AnityaId(update.anityaId),
+        PackageVersion(update.packageVersion)
+      ).transact(doobieTransactor)
+      emailAddresses <- Persistence.retrieveAllEmailsWithAnityaIdIO(doobieTransactor, update.anityaId)
+      _ <- IO(s"All email addresses subscribed to ${update.packageName}: $emailAddresses")
+      emailAddressesSubscribedToAllUpdates <- Persistence.retrieveAllEmailsSubscribedToAllFullIO(doobieTransactor)
+      _ <- IO(s"All email addresses subscribed to ALL: $emailAddressesSubscribedToAllUpdates")
+      _ <- (emailAddressesSubscribedToAllUpdates ++ emailAddresses).traverse{ emailAddress =>
+        logger.info(s"Emailing out an update of ${update.packageName} to $emailAddress")
+        emailSender.email(
+          to = emailAddress,
+          subject = update.printEmailTitle,
+          content = update.printEmailBody
+        )
+      }
+    } yield ()
+  }
+
+  private def updateDependencyInStore(
+    update: DependencyUpdate,
+    doobieTransactor: Transactor[IO]
+  )(implicit contextShift: ContextShift[IO]): IO[Unit] = {
+    Persistence.updatePackage(update).transact(doobieTransactor).map(_ => ())
+  }
 
   def consumeRabbitMQ(
     stream: fs2.Stream[IO, AmqpEnvelope[Json]],
@@ -34,27 +65,13 @@ object RabbitMQListener extends CustomLogging {
   )(implicit contextShift: ContextShift[IO]): fs2.Stream[IO, Unit] = {
     stream
       .map(parseEnvelope)
-      .evalTap(x => IO(logger.info(x)))
+      .evalTap(dependencyUpdateOrErr => IO(logger.info(
+        s"[DEPENDENCY UPDATE] We received an upstream dependency update that looked like the following: $dependencyUpdateOrErr"
+      )))
       .evalMap{
         case Right(value) =>
-          for {
-            _ <- Persistence.updatePackageVersion(
-              AnityaId(value.anityaId),
-              PackageVersion(value.packageVersion)
-            ).transact(doobieTransactor)
-            emailAddresses <- Persistence.retrieveAllEmailsWithAnityaIdIO(doobieTransactor, value.anityaId)
-            _ <- IO(s"All email addresses subscribed to ${value.packageName}: $emailAddresses")
-            emailAddressesSubscribedToAllUpdates <- Persistence.retrieveAllEmailsSubscribedToAllFullIO(doobieTransactor)
-            _ <- IO(s"All email addresses subscribed to ALL: $emailAddressesSubscribedToAllUpdates")
-            _ <- (emailAddressesSubscribedToAllUpdates ++ emailAddresses).traverse{ emailAddress =>
-              logger.info(s"Emailing out an update of ${value.packageName} to $emailAddress")
-              emailSender.email(
-                to = emailAddress,
-                subject = value.printEmailTitle,
-                content = value.printEmailBody
-              )
-            }
-          } yield ()
+          updateDependencyInStore(value, doobieTransactor)
+            .>>(sendEmailAboutDependencyUpdate(value, doobieTransactor, emailSender))
         case Left(PayloadParseFailure(decodeError, json)) => IO(logger.warn(s"We saw this payload parse error!: $decodeError\n$json"))
         case Left(IncorrectRoutingKey(incorrectRoutingKey)) => IO(logger.debug(s"Ignoring this routing key... $incorrectRoutingKey"))
       }

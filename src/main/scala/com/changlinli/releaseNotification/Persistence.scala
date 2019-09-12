@@ -9,6 +9,7 @@ import cats.Id
 import cats.data.{Ior, Kleisli, NonEmptyList}
 import cats.effect.{Blocker, ContextShift, IO, Resource}
 import cats.implicits._
+import com.changlinli.releaseNotification.Main.DependencyUpdate
 import com.changlinli.releaseNotification.WebServer._
 import com.changlinli.releaseNotification.data.{ConfirmationCode, EmailAddress, FullPackage, PackageName, PackageVersion, UnsubscribeCode}
 import com.changlinli.releaseNotification.ids.{AnityaId, EmailId, PackageId, SubscriptionId}
@@ -473,6 +474,37 @@ object Persistence extends CustomLogging {
 
   def retrieveAllEmailsSubscribedToAllFullIO(transactor: Transactor[IO])(implicit contextShift: ContextShift[IO]): IO[List[EmailAddress]] =
     retrieveAllEmailsSubscribedToAllCIO.transact(transactor)
+
+  def updatePackage(dependencyUpdate: DependencyUpdate): ConnectionIO[Int] = {
+    val retrieveSql = sql"""SELECT id FROM packages WHERE anityaId=${dependencyUpdate.anityaId}"""
+      .queryWithLogHandler[Int](doobieLogHandler)
+      .to[List]
+    val createSql =
+      sql"""INSERT INTO packages (
+           |currentVersion,
+           |homepage,
+           |name,
+           |anityaId
+           |) VALUES (
+           |${dependencyUpdate.packageVersion},
+           |${dependencyUpdate.homepage},
+           |${dependencyUpdate.packageName},
+           |${dependencyUpdate.anityaId}) """.stripMargin
+        .updateWithLogHandler(doobieLogHandler)
+    val updateSql = sql"""UPDATE `packages` SET
+         |currentVersion=${dependencyUpdate.packageVersion},
+         |homepage = ${dependencyUpdate.homepage},
+         |name =${dependencyUpdate.packageName} WHERE anityaId=${dependencyUpdate.anityaId}""".stripMargin
+      .updateWithLogHandler(doobieLogHandler)
+    for {
+      ids <- retrieveSql
+      rowsAffected <- if (ids.isEmpty) {
+        createSql.run
+      } else {
+        updateSql.run
+      }
+    } yield rowsAffected
+  }
 
   def retrieveAllEmailsWithAnityaId(anityaId: Int): ConnectionIO[List[EmailAddress]] =
     sql"""SELECT emailAddress FROM subscriptions
