@@ -9,7 +9,8 @@
 
 <h3>Q: How is this different from <a href="https://release-monitoring.org">release-monitoring.org</a>?</h3>
 
-<p>Fedora's <a href="https://release-monitoring.org">release-monitoring.org</a> is a great resource with tens of thousands of packages that it continually updates.
+<p>Fedora's <a href="https://release-monitoring.org">release-monitoring.org</a> is essentially a giant periodic scraper of tens of thousands of package webpages.
+    Upon detecting a new version of any of those packages, it publishes messages to an AMQP broker.
     Its scraping of package homepages is what powers this website; this service does no scraping of its own.
     However, while the Fedora ecosystem does provide the ability to get email notifications for package updates,
     it may not be immediately obvious how to do so.

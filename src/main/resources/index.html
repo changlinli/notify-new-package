@@ -76,7 +76,11 @@
       homepageElement.textContent = 'Homepage: ';
       homepageElement.appendChild(homepageLink);
       const anityaIdElement = document.createElement('li');
-      anityaIdElement.textContent = 'Anitya ID: ' + resultElem.anityaId;
+      const anityaIdLink = document.createElement('a');
+      anityaIdLink.textContent = 'https://release-monitoring.org/project/' + resultElem.anityaId;
+      anityaIdLink.href = 'https://release-monitoring.org/project/' + resultElem.anityaId;
+      anityaIdElement.textContent = 'release-monitoring.org URL: ';
+      anityaIdElement.appendChild(anityaIdLink);
       const currentVersionElement = document.createElement('li');
       currentVersionElement.textContent = 'Current Version: ' + resultElem.currentVersion;
       descriptionList.appendChild(nameElement);
