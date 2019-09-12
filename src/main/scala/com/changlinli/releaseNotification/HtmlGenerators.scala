@@ -1,6 +1,7 @@
 package com.changlinli.releaseNotification
 
 import cats.data.NonEmptyList
+import com.changlinli.releaseNotification.WebServer.{AnityaIdFieldNotValidInteger, EmailAddressIncorrectFormat, EmailAddressKeyNotFound, NoPackagesSelected, PackagesKeyNotFound, SubscribeToPackagesError}
 import com.changlinli.releaseNotification.data.{ConfirmationCode, FullPackage, SanitizedList, UnsubscribeCode}
 import com.changlinli.releaseNotification.errors.RequestProcessError
 import scalatags.Text
@@ -173,6 +174,53 @@ object HtmlGenerators {
         formatAllPackages(SanitizedList.fromList(packages.toList))
       )
     )
+  }
+
+  def dealWithEmailSubmissionError(error: SubscribeToPackagesError): Text.TypedTag[String] = {
+    error match {
+      case PackagesKeyNotFound =>
+        insertIntoBody(
+          div(
+            "It looks like you submitted a form without having selected any packages. Please go back and select at least one package."
+          )
+        )
+      case NoPackagesSelected =>
+        insertIntoBody(
+          div(
+            "It looks like you submitted a form without having selected any packages. Please go back and select at least one package."
+          )
+        )
+      case EmailAddressKeyNotFound =>
+        insertIntoBody(
+          div(
+            "Hmmmm... you submitted a form without an email address key. Are you using an automated script to subscribe?" +
+              " If so I would highly recommend you directly " +
+              "subscribe to Fedora's AMQP broker instead of using this service."
+          )
+        )
+      case AnityaIdFieldNotValidInteger(idStr) =>
+        insertIntoBody(
+          div(
+            s"Hmmmm... you submitted a form using invalid Anitya (release-monitoring.org) " +
+              s"IDs (in particular you submitted $idStr, which is not a valid integer). " +
+              s"Are you using an automated script to subscribe?" +
+              " If so I would highly recommend you directly " +
+              "subscribe to Fedora's AMQP broker instead of using this service."
+          )
+        )
+      case EmailAddressIncorrectFormat("") =>
+        insertIntoBody(
+          div(
+            "You left the email address field blank! Please submit a valid email address."
+          )
+        )
+      case EmailAddressIncorrectFormat(candidateEmailStr) =>
+        insertIntoBody(
+          div(
+            s"$candidateEmailStr doesn't seem to be a valid email address. Please submit a valid email address."
+          )
+        )
+    }
   }
 
 }

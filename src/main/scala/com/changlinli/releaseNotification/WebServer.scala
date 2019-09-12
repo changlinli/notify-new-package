@@ -35,27 +35,34 @@ object WebServer extends CustomLogging {
   final case class UnsubscribeEmailFromAllPackages(email: EmailAddress) extends EmailAction with PersistenceAction
   final case class ChangeEmail(oldEmail: EmailAddress, newEmail: EmailAddress) extends EmailAction with PersistenceAction
 
+  sealed trait SubscribeToPackagesError
+  case object PackagesKeyNotFound extends SubscribeToPackagesError
+  case object NoPackagesSelected extends SubscribeToPackagesError
+  case object EmailAddressKeyNotFound extends SubscribeToPackagesError
+  final case class AnityaIdFieldNotValidInteger(idStr: String) extends SubscribeToPackagesError
+  final case class EmailAddressIncorrectFormat(candidateEmailStr: String) extends SubscribeToPackagesError
+
   sealed trait WebAction
   final case class UnsubscribeUsingCode(code: UnsubscribeCode) extends WebAction
   final case class SubscribeToPackages(email: EmailAddress, pkgs: NonEmptyList[AnityaId]) extends WebAction
   object SubscribeToPackages {
-    def fromUrlForm(urlForm: UrlForm): Either[String, SubscribeToPackages] = {
+    def fromUrlForm(urlForm: UrlForm): Either[SubscribeToPackagesError, SubscribeToPackages] = {
       for {
         packages <- urlForm
           .values
           .get("packages")
-          .toRight("Packages key not found!")
+          .toRight(PackagesKeyNotFound)
           // Manual eta expansion required here because of weird type inference bug
           // Scala 2.13.0
           .map(xs => NonEmptyList.fromFoldable(xs))
-          .flatMap(_.toRight("Received an empty list of packages to subscribe to!"))
-          .flatMap(_.traverse(x => x.toIntOption.toRight(s"Attempted to convert $x into an integer as an AnityaId but it doesn't look like a valid integer!")))
+          .flatMap(_.toRight(NoPackagesSelected))
+          .flatMap(_.traverse(x => x.toIntOption.toRight(AnityaIdFieldNotValidInteger(x))))
         emailAddress <- urlForm
           .values
           .get("emailAddress")
           .flatMap(_.headOption)
-          .toRight("Email address key not found!")
-          .flatMap(candidateEmail => EmailAddress.fromString(candidateEmail).toRight(s"$candidateEmail was an invalid email address!"))
+          .toRight(EmailAddressKeyNotFound)
+          .flatMap(candidateEmail => EmailAddress.fromString(candidateEmail).toRight(EmailAddressIncorrectFormat(candidateEmail)))
       } yield SubscribeToPackages(emailAddress, packages.map(AnityaId.apply))
     }
   }
@@ -349,7 +356,7 @@ object WebServer extends CustomLogging {
         _ <- infoIO(s"We got this form: $form")
         response <- SubscribeToPackages.fromUrlForm(form) match {
           case Left(errMsg) =>
-            BadRequest(errMsg)
+            BadRequest(HtmlGenerators.dealWithEmailSubmissionError(errMsg))
           case Right(incomingSubscription) =>
             for {
               _ <- infoIO(s"Persisting the following subscription: $incomingSubscription")
@@ -716,14 +723,6 @@ object WebServer extends CustomLogging {
       content = content
     )
   }
-
-  def persistSubscriptions(
-    incomingSubscriptionRequest: IncomingSubscriptionRequest
-  )(implicit contextShift: ContextShift[IO]
-  ): doobie.ConnectionIO[List[Int]] =
-    incomingSubscriptionRequest
-      .packages
-      .traverse(pkg => Persistence.insertIntoDB(name = incomingSubscriptionRequest.emailAddress, packageName = pkg))
 
   def runWebServer(
     emailSender: EmailSender,

@@ -5,8 +5,7 @@ import java.util.concurrent.Executors
 
 import cats.data.{Ior, NonEmptyList}
 import cats.effect.{Blocker, ContextShift, IO}
-import com.changlinli.releaseNotification.Main.DependencyUpdate
-import com.changlinli.releaseNotification.Persistence
+import com.changlinli.releaseNotification.{DependencyUpdate, Persistence}
 import com.changlinli.releaseNotification.data.{ConfirmationCode, EmailAddress, FullPackage, PackageName, PackageVersion, UnsubscribeCode}
 import com.changlinli.releaseNotification.errors.SubscriptionAlreadyExists
 import com.changlinli.releaseNotification.ids.SubscriptionId
@@ -177,31 +176,30 @@ class TestPersistence extends FlatSpec with Matchers with BeforeAndAfterAll {
   it should "succeed in creating a new package when a DependencyUpdate comes in for a non-existent package" in {
     val action = for {
       _ <- Persistence.initializeDatabase
-      _ <- Persistence.updatePackage(
-        DependencyUpdate(
-          packageName = "hello",
-          packageVersion = "0.01",
-          previousVersion = "0.00",
-          homepage = "example.com",
-          anityaId = 1
-        )
+      _ <- Persistence.upsertPackage(
+        packageName = "hello",
+        version = PackageVersion("0.01"),
+        homepage = "example.com",
+        anityaId = 1
       )
       results <- Persistence.retrievePackageByAnityaIdQuery(1).to[List]
     } yield results
     action.transact(transactor).unsafeRunSync().length should be (1)
   }
-  it should "not create a new package when a DependencyUpdate comes in for a pre-existing package" in {
+  it should "not create a new package when an upsert comes in for a pre-existing package" in {
     val action = for {
       _ <- Persistence.initializeDatabase
-      _ <- Persistence.upsertPackage("hello", "hello.com", 1, PackageVersion("1.0"))
-      _ <- Persistence.updatePackage(
-        DependencyUpdate(
+      _ <- Persistence.upsertPackage(
+        "hello",
+        "hello.com",
+        1,
+        PackageVersion("1.0")
+      )
+      _ <- Persistence.upsertPackage(
           packageName = "hello",
-          packageVersion = "2.0",
-          previousVersion = "1.0",
+          version = PackageVersion("2.0"),
           homepage = "example.com",
           anityaId = 1
-        )
       )
       results <- Persistence.retrievePackageByAnityaIdQuery(1).to[List]
     } yield results

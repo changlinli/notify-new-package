@@ -84,33 +84,6 @@ object Main extends MyIOApp with Logging {
 
   val routingKey = RoutingKey("#")
 
-  final case class DependencyUpdate(packageName: String, packageVersion: String, previousVersion: String, homepage: String, anityaId: Int) {
-    def printEmailTitle: String = s"Package $packageName was just upgraded from " +
-      s"version $previousVersion to $packageVersion"
-
-    def printEmailBody: String = s"Package $packageName was just upgraded from " +
-      s"version $previousVersion to $packageVersion. Check out its homepage " +
-      s"$homepage for more details."
-  }
-
-  implicit val dependencyUpdateDecoder: Decoder[DependencyUpdate] = new Decoder[DependencyUpdate] {
-    override def apply(c: HCursor): Result[DependencyUpdate] = {
-      for {
-        projectName <- c.downField("project").downField("name").as[String]
-        projectVersion <- c.downField("project").downField("version").as[String]
-        previousVersion <- c.downField("message").downField("old_version").as[String]
-        homepage <- c.downField("project").downField("homepage").as[String]
-        anityaId <- c.downField("project").downField("id").as[Int]
-      } yield DependencyUpdate(
-        packageName = projectName,
-        packageVersion = projectVersion,
-        previousVersion = previousVersion,
-        homepage = homepage,
-        anityaId = anityaId
-      )
-    }
-  }
-
 
   def processAllAnityaProjects(
     client: Client[IO],

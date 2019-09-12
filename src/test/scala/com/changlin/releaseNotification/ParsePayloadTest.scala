@@ -1,7 +1,8 @@
 package com.changlin.releaseNotification
 
-import com.changlinli.releaseNotification.Main
-import com.changlinli.releaseNotification.Main.DependencyUpdate
+import com.changlinli.releaseNotification.data.{PackageName, PackageVersion}
+import com.changlinli.releaseNotification.ids.AnityaId
+import com.changlinli.releaseNotification.{DependencyUpdate, JsonPayloadParseResult, NewPackageCreated, PackageEdited}
 import org.scalatest._
 
 class ParsePayloadTest extends FlatSpec with Matchers {
@@ -83,9 +84,65 @@ class ParsePayloadTest extends FlatSpec with Matchers {
 }
     """.stripMargin
 
+  val packageCreationJson =
+    """
+{
+    "distro": null,
+    "message": {
+        "agent": "monkeysonhigh",
+        "project": "a-test-project"
+    },
+    "project": {
+        "backend": "GitHub",
+        "created_on": 1568268732.0,
+        "ecosystem": "https://github.com/changlinli/test-updates",
+        "homepage": "https://github.com/changlinli/test-updates",
+        "id": 21811,
+        "name": "a-test-project",
+        "regex": null,
+        "updated_on": 1568268732.0,
+        "version": null,
+        "version_url": "changlinli/test-updates",
+        "versions": []
+    }
+}
+    """.stripMargin
+
+  val packageEditJson =
+    """
+{
+    "distro": null,
+    "message": {
+        "agent": "monkeysonhigh",
+        "changes": {
+            "name": {
+                "new": "a-test-project-blah",
+                "old": "a-test-project"
+            }
+        },
+        "fields": [
+            "name"
+        ],
+        "project": "a-test-project-blah"
+    },
+    "project": {
+        "backend": "GitHub",
+        "created_on": 1568268732.0,
+        "ecosystem": "https://github.com/changlinli/test-updates",
+        "homepage": "https://github.com/changlinli/test-updates",
+        "id": 21811,
+        "name": "a-test-project-blah",
+        "regex": null,
+        "updated_on": 1568269612.0,
+        "version": null,
+        "version_url": "changlinli/test-updates",
+        "versions": []
+    }
+}
+    """.stripMargin
 
   "Parsing a payload" should "succeed with an example JSON" in {
-    io.circe.parser.parse(json).toOption.get.as[DependencyUpdate] should be (Right(DependencyUpdate(
+    io.circe.parser.parse(json).toOption.get.as[JsonPayloadParseResult] should be (Right(DependencyUpdate(
       packageName = "check_gitlab",
       packageVersion = "0.4.0",
       previousVersion = "0.3.2",
@@ -93,4 +150,23 @@ class ParsePayloadTest extends FlatSpec with Matchers {
       anityaId = 20152
     )))
   }
+
+  "Parsing a package creation payload" should "succeed with an example JSON" in {
+    io.circe.parser.parse(packageCreationJson).toOption.get.as[JsonPayloadParseResult] should be (Right(NewPackageCreated(
+      packageName = PackageName("a-test-project"),
+      packageVersion = None,
+      homepage = "https://github.com/changlinli/test-updates",
+      anityaId = AnityaId(21811)
+    )))
+  }
+
+  "Parsing a package edit payload" should "succeed with an example JSON" in {
+    io.circe.parser.parse(packageEditJson).toOption.get.as[JsonPayloadParseResult] should be (Right(PackageEdited(
+      packageName = PackageName("a-test-project-blah"),
+      packageVersion = None,
+      homepage = "https://github.com/changlinli/test-updates",
+      anityaId = AnityaId(21811)
+    )))
+  }
+
 }

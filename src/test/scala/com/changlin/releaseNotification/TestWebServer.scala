@@ -1,19 +1,17 @@
 package com.changlin.releaseNotification
 
+
 import java.time.Instant
 import java.util.concurrent.Executors
 
 import cats.data.{Ior, NonEmptyList}
 import cats.effect.{Blocker, ContextShift, IO}
-import com.changlinli.releaseNotification.Main.DependencyUpdate
-import com.changlinli.releaseNotification.{Persistence, WebServer}
-import com.changlinli.releaseNotification.data.{ConfirmationCode, EmailAddress, FullPackage, PackageName, PackageVersion, UnsubscribeCode}
+import com.changlinli.releaseNotification.data._
 import com.changlinli.releaseNotification.errors.SubscriptionAlreadyExists
-import com.changlinli.releaseNotification.ids.{AnityaId, SubscriptionId}
+import com.changlinli.releaseNotification.ids.AnityaId
+import com.changlinli.releaseNotification.{Persistence, WebServer}
 import doobie.implicits._
-import doobie.scalatest.IOChecker
 import org.scalatest._
-import org.sqlite.SQLiteException
 
 import scala.concurrent.ExecutionContext
 
