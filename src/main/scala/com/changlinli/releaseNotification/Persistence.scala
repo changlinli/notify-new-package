@@ -3,16 +3,14 @@ package com.changlinli.releaseNotification
 import java.time.Instant
 
 import cats.Id
-import cats.data.{Ior, IorT, Kleisli, NonEmptyList}
+import cats.data.{Ior, Kleisli, NonEmptyList}
 import cats.effect.{Blocker, ContextShift, IO, Resource}
 import cats.implicits._
-import com.changlinli.releaseNotification.WebServer._
-import com.changlinli.releaseNotification.data.{ConfirmationCode, EmailAddress, FullPackage, PackageName, PackageVersion, UnsubscribeCode}
+import com.changlinli.releaseNotification.data._
 import com.changlinli.releaseNotification.errors.SubscriptionAlreadyExists
-import com.changlinli.releaseNotification.ids.{AnityaId, EmailId, PackageId, SubscriptionId}
-import doobie.{Transactor, _}
+import com.changlinli.releaseNotification.ids.{AnityaId, EmailId, SubscriptionId}
 import doobie.implicits._
-import org.sqlite.SQLiteConfig
+import doobie.{Transactor, _}
 import org.sqlite.SQLiteConfig.JournalMode
 import org.sqlite.javax.SQLiteConnectionPoolDataSource
 
@@ -553,11 +551,7 @@ object Persistence extends CustomLogging {
   def insertIntoDB(name: String, packageName: String)(implicit contextShift: ContextShift[IO]): ConnectionIO[Int] =
     sql"""INSERT INTO subscriptions (email, packageName) values ($name, $packageName)""".update.run
 
-  val dropSubscriptionsTable: ConnectionIO[Int] =
-    sql"""DROP TABLE IF EXISTS subscriptions""".update.run
-
   val initializeDatabase: ConnectionIO[Unit] = for {
-    _ <- dropSubscriptionsTable
     _ <- createEmailsTable.updateWithLogHandler(doobieLogHandler).run
     _ <- createPackagesTable.updateWithLogHandler(doobieLogHandler).run
     _ <- createSubscriptionsTable.updateWithLogHandler(doobieLogHandler).run
