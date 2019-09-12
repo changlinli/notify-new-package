@@ -203,7 +203,7 @@ object Persistence extends CustomLogging {
   }
 
   def searchForPackagesByExactName(name: String): doobie.Query0[(Int, String, String, Int, String)] = {
-    sql"""SELECT id, name, homepage, anityaId, currentVersion FROM `packages` WHERE name = $name"""
+    sql"""SELECT id, name, homepage, anityaId, currentVersion FROM `packages` WHERE name = $name COLLATE NOCASE"""
       .queryWithLogHandler[(Int, String, String, Int, String)](doobieLogHandler)
   }
 
