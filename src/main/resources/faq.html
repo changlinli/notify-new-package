@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <link rel="stylesheet" type="text/css" href="style.css">
+</head>
+<body>
+<h2>Frequently Asked Questions</h2>
+
+<h3>Q: How is this different from <a href="release-monitoring.org">release-monitoring.org</a>?</h3>
+
+<p>Fedora's <a href="release-monitoring.org">release-monitoring.org</a> is a great resource with tens of thousands of packages that it continually updates.
+    Its scraping of package homepages is what powers this website; this service does no scraping of its own.
+    However, while the Fedora ecosystem does provide the ability to get email notifications for package updates,
+    it may not be immediately obvious how to do so.
+    It requires looking up the package you want on <a href="release-monitoring.org">release-monitoring.org</a>, creating a <a href="https://admin.fedoraproject.org/accounts/">Fedora FAS account</a>, then going to
+    <a href="http://apps.fedoraproject.org/notifications/">http://apps.fedoraproject.org/notifications/</a>
+    and then setting up custom filters there.
+</p>
+
+<p>
+    If you know where to look, this is not terribly onerous, the entire process takes maybe five minutes.
+    However, if all you want is email notifications of new package versions, there's
+    no reason it should be any more complicated than a single form with two fields:
+    a package field, and an email address field.
+    That's what this project is! Removing all the accidental complexity so that you just have those two boxes.
+</p>
+
+<h3>Q: Is there any official relationship between this project and <a href="release-monitoring.org">release-monitoring.org</a>?</h3>
+
+<p>This is just a fun one-man side project.
+    This project has not received any official endorsement from the maintainers of
+    <a href="release-monitoring.org">release-monitoring.org</a>. In fact I would be
+    mildly surprised if they'd heard of this website. This service just
+    subscribes to the public AMQP brokers that <a href="release-monitoring.org">release-monitoring.org</a>
+    graciously provides.</p>
+
+<h3>Q: What if I want to add a new package which currently does not exist?</h3>
+
+<p>To add a package you'll need to use <a href="release-monitoring.org">release-monitoring.org</a> directly,
+    which means you'll probably want an account with <a href="https://admin.fedoraproject.org/accounts/">Fedora FAS</a>
+    if you don't already have one. If your package already uses GitHub, GitLab, or
+    BitBucket for releases or is a package on npm, PyPI, Rubygems, crates.io,
+    Hackage, etc., once you have an account set up, it is often a matter of seconds to create a new package.</p>
+
+<h3>Q: Do you share my email address with any other services?</h3>
+
+<p>No! Absolutely not. Your email addresses are never shared with any other
+    party and certainly are not sent off to be harvested in some giant email
+    list somewhere.</p>
+
+<h3>Q: How do I remove my email address from this service?</h3>
+
+<p>Simply unsubscribe to all package notifications you are currently unsubscribed to. Your email address will be automatically deleted within an hour.</p>
+
+<h3>Q: If I don't remember which packages I'm subscribed to, or otherwise am having difficulties unsubscribing what can I do?</h3>
+
+<p>Please email admin at the URL of this website detailing the problems you're running into and I'll do my best to help you out.</p>
+
+<h3>Q: Where is the source code for this service?</h3>
+
+<p>The source code for this lives at <a href="https://github.com/changlinli/notify-new-package">https://github.com/changlinli/notify-new-package</a>.</p>
+
+</body>
+</html>

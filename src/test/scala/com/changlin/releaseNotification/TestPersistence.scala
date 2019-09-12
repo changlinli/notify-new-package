@@ -5,10 +5,12 @@ import java.util.concurrent.Executors
 
 import cats.data.{Ior, NonEmptyList}
 import cats.effect.{Blocker, ContextShift, IO}
+import cats.implicits._
 import com.changlinli.releaseNotification.{DependencyUpdate, Persistence}
 import com.changlinli.releaseNotification.data.{ConfirmationCode, EmailAddress, FullPackage, PackageName, PackageVersion, UnsubscribeCode}
 import com.changlinli.releaseNotification.errors.SubscriptionAlreadyExists
 import com.changlinli.releaseNotification.ids.SubscriptionId
+import doobie.free.connection.ConnectionIO
 import doobie.implicits._
 import org.scalatest._
 import org.sqlite.SQLiteException
@@ -204,6 +206,33 @@ class TestPersistence extends FlatSpec with Matchers with BeforeAndAfterAll {
       results <- Persistence.retrievePackageByAnityaIdQuery(1).to[List]
     } yield results
     action.transact(transactor).unsafeRunSync().map{case (_, _, _, anityaId, currentVersion) => (anityaId, currentVersion)} should be (List((1, "2.0")))
+  }
+  it should "delete unused emails if an email is no longer subscribed to any packages" in {
+    val action = for {
+      _ <- Persistence.initializeDatabase
+      _ <- Persistence.upsertPackage("hello", "hello.com", 1, PackageVersion("1.0"))
+      _ <- Persistence.subscribeToPackagesFullName(
+        EmailAddress.unsafeFromString("hello@hello.com"),
+        NonEmptyList.of(
+          (
+            FullPackage(name = PackageName("hello"), homepage = "hello.com", anityaId = 1, packageId = 1, currentVersion = PackageVersion("1.0")),
+            UnsubscribeCode.unsafeFromString("unsubscribeString")
+          )
+        ),
+        Instant.EPOCH,
+        ConfirmationCode.unsafeFromString("confirm")
+      )
+      deletedEmailAddresses <- Persistence.deleteUnusedEmailAddresses
+      _ <- (deletedEmailAddresses.length shouldBe 0).pure[ConnectionIO]
+      _ <- Persistence.unsubscribeUsingCode(UnsubscribeCode.unsafeFromString("unsubscribeString"))
+      results <- Persistence.deleteUnusedEmailAddresses
+    } yield {
+      results.map(_._2)
+    }
+    action
+      .transact(transactor)
+      .unsafeRunSync()
+      .shouldBe(List(EmailAddress.unsafeFromString("hello@hello.com")))
   }
 
 }

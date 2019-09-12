@@ -337,6 +337,10 @@ object WebServer extends CustomLogging {
         StaticFile
           .fromResource("/style.css", blocker, Some(request))
           .getOrElseF(NotFound("Couldn't find style.css!"))
+      case request @ GET -> Root / "faq" =>
+        StaticFile
+          .fromResource("/faq.html", blocker, Some(request))
+          .getOrElseF(NotFound("Couldn't find faq.html!"))
     }
 
   // If you see a warning here about unreachable code see https://github.com/scala/bug/issues/11457

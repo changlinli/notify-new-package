@@ -187,10 +187,16 @@ object Main extends MyIOApp with Logging {
             }
         }
         keyPressDetectorFiber <- stream.compile.drain.start
+        garbageCleanupFiber <- GarbageDataCollection
+          .periodicallyCleanUp(doobieTransactor)
+          .compile
+          .drain
+          .start
         _ <- rabbitFiber.join
         _ <- anityaFiber.join
         _ <- webServerFiber.join
         _ <- keyPressDetectorFiber.join
+        _ <- garbageCleanupFiber.join
       } yield ()
     }
   } yield ExitCode.Success

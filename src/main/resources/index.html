@@ -13,16 +13,21 @@
   <p>Are you a software developer who wants to know when your compiler or another dependency has a new version? </p>
   <p>Are you a package maintainer that wants to keep track of when an upstream project has published a new version?</p>
   <p>Do you just want to know when a new version for some piece of software has been released?</p>
-  <p>This is for you! Just search for the packages you care about, enter your email address, and hit submit!</p>
-  <p>That's it! No need to sign up for a user account, no additional pages to navigate through, no nonsense. And of course, you can unsubscribe (and remove your email) at any time.</p>
-  <p>We're built on top of Fedora's <a href="https://release-monitoring.org">release-monitoring.org</a>, but try to cut down user friction to a minimum.</p>
+  <p>This is for you! <strong>Just search for the packages you care about, enter your email address, and hit submit!</strong></p>
+  <p>That's it! <strong>No need to sign up for a user account, no additional pages to
+    navigate through, no nonsense.</strong> </p>
+  <p>And of course, you can unsubscribe (and
+    remove your email) at any time. Plus we never give your email away to
+    anyone else, or use your email address for anything other than notifying
+    you of new package versions.</p>
+  <p>We're built on top of Fedora's <a href="https://release-monitoring.org">release-monitoring.org</a>, but try to cut down user friction to a minimum. See the <a href="faq">FAQ</a> for more information.</p>
 </div>
 <div id="searchContainer">
-<div>
+<div id="packageSearchBox">
   <label for="packageName" class="formQuestion">Search for a package name:</label>
   <input type="text" id="packageName" name="packages" placeholder="scala">
 </div>
-<form action="/submitEmailAddress" method="post">
+<form id="submitEmailForm" action="/submitEmailAddress" method="post">
   <div id="packagesForSubscriptionFormElems">
   </div>
   <div>
@@ -40,10 +45,10 @@
     <button type="submit">Subscribe to email updates about these packages!</button>
   </div>
 </form>
-</div>
-<div id="searchResultsContainer">
-  <h3>Package Search Results</h3>
-  <div id="searchResults"></div>
+  <div id="searchResultsContainer">
+    <h3>Package Search Results (Don't see your result here? See the <a href="faq">FAQ</a> for details.)</h3>
+    <div id="searchResults"></div>
+  </div>
 </div>
 <div>
   The source code for this lives at <a href="https://github.com/changlinli/notify-new-package">https://github.com/changlinli/notify-new-package</a>

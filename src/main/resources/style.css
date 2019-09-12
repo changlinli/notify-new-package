@@ -7,3 +7,14 @@
 .formInputElem {
   visibility: hidden;
 }
+
+#searchContainer {
+  display: grid;
+}
+
+#submitEmailForm {
+  grid-template-columns: auto;
+  grid-template-rows: auto;
+  grid-template-areas:
+    ""
+}

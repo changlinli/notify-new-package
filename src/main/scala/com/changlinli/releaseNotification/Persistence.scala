@@ -246,6 +246,31 @@ object Persistence extends CustomLogging {
     updatePackageVersionQuery(anityaId, newVersion).run
   }
 
+  private def retrieveUnusedEmailAddresses: ConnectionIO[List[(EmailId, EmailAddress)]] = {
+    sql"""SELECT emails.id, emails.emailAddress FROM emails
+         |LEFT JOIN subscriptions ON subscriptions.emailId = emails.id
+         |WHERE subscriptions.id IS NULL""".stripMargin
+      .queryWithLogHandler[(Int, String)](doobieLogHandler)
+      // We use unsafeFromString, because we are sure that emails in the database are valid email addresses
+      .map{case (emailId, emailAddress) => (EmailId(emailId), EmailAddress.unsafeFromString(emailAddress))}
+      .to[List]
+  }
+
+  private def deleteEmailAddress(emailId: EmailId): ConnectionIO[Int] = {
+    sql"""DELETE FROM emails WHERE id = ${emailId.toInt}"""
+      .updateWithLogHandler(doobieLogHandler)
+      .run
+  }
+
+  def deleteUnusedEmailAddresses: ConnectionIO[List[(EmailId, EmailAddress)]] = {
+    for {
+      unusedEmailIdsAndEmailAddresses <- retrieveUnusedEmailAddresses
+      _ <- unusedEmailIdsAndEmailAddresses
+        .map{_._1}
+        .traverse{ deleteEmailAddress }
+    } yield unusedEmailIdsAndEmailAddresses
+  }
+
   def upsertPackage(packageName: String, homepage: String, anityaId: Int, version: PackageVersion): ConnectionIO[Int] = {
     for {
       listOfIdNameHomepageAnityaId <- retrievePackageByAnityaIdQuery(anityaId).to[List]
@@ -412,12 +437,6 @@ object Persistence extends CustomLogging {
 
   def changeEmail(oldEmail: EmailAddress, newEmail: EmailAddress): ConnectionIO[Int] = {
     sql"""UPDATE `emails` SET emailAddress = ${newEmail.str} WHERE emailAddress = ${oldEmail.str}"""
-      .update
-      .run
-  }
-
-  def unsubscribe(email: EmailAddress): ConnectionIO[Int] = {
-    sql"""DELETE FROM subscriptions WHERE emailId IN (SELECT id FROM emails WHERE emailAddress=${email.str})"""
       .update
       .run
   }
