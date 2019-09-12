@@ -1,9 +1,8 @@
 package com.changlinli.releaseNotification
 
 import cats.data.NonEmptyList
-import cats.instances.all._
+import com.changlinli.releaseNotification.data.{ConfirmationCode, FullPackage, SanitizedList, UnsubscribeCode}
 import com.changlinli.releaseNotification.errors.RequestProcessError
-import com.changlinli.releaseNotification.data.{ConfirmationCode, FullPackage, UnsubscribeCode}
 import scalatags.Text
 import scalatags.Text.all._
 
@@ -25,7 +24,7 @@ object HtmlGenerators {
     insertIntoBody(
       div(
         "Are you sure you want to subscribe to version updates concerning the following packages? If not feel, feel free to navigate to any other page.",
-        formatAllPackages(packages.toList),
+        formatAllPackages(SanitizedList.fromList(packages.toList)),
         form(
           action := s"/${WebServer.confirmationPath}/${confirmationCode.str}",
           method := "post",
@@ -42,7 +41,7 @@ object HtmlGenerators {
     insertIntoBody(
       div(
         "You've successfully subscribed to version updates concerning the following packages (you'll be getting an email about this too).",
-        formatAllPackages(packages.toList)
+        formatAllPackages(SanitizedList.fromList(packages.toList))
       )
     )
   }
@@ -93,8 +92,8 @@ object HtmlGenerators {
     )
   }
 
-  private def formatAllPackages(pkgs: List[FullPackage]): Text.TypedTag[String] = {
-    val listItems = pkgs.map(
+  private def formatAllPackages(pkgs: SanitizedList[FullPackage]): Text.TypedTag[String] = {
+    val listItems = pkgs.toList.map(
       pkg => li(formatSinglePackage(pkg))
     )
     ul(listItems: _*)
@@ -116,16 +115,14 @@ object HtmlGenerators {
           // We sort because we don't want to leak any information about which
           // packages an email address is subscribed to, except in emails. We
           // always want a user to think that all packages have been
-          // subscribed to. If we didn't sort, the ordering of which packages
-          // come first would leak which subscriptions already existed and
-          // which didn't.
-          formatAllPackages((subscriptionAlreadyExists.map(_.pkg) ++ packages.toList).sortBy(_.name.str))
+          // subscribed to, so we combine all packages together.
+          formatAllPackages(SanitizedList.fromList(subscriptionAlreadyExists.map(_.pkg) ++ packages.toList))
         )
       )
     } else if (subscriptionAlreadyExists.nonEmpty) {
       // We know this is safe because of the if check
       val nonEmptySubscriptionAlreadyExists = NonEmptyList.fromListUnsafe(subscriptionAlreadyExists)
-      successfullySubmittedFrom((nonEmptySubscriptionAlreadyExists.map(_.pkg) ++ packages.toList).sortBy(_.name.str))
+      successfullySubmittedFrom(nonEmptySubscriptionAlreadyExists.map(_.pkg) ++ packages.toList)
     } else {
       throw new Exception(
         s"This is a programmer bug! We should have included all possible non-empty " +
@@ -152,14 +149,14 @@ object HtmlGenerators {
           // We don't want to leak any information about which
           // packages an email address is subscribed to, except in emails. We
           // always want a user to think that all packages have been
-          // subscribed to. We sort here because we sort in [[submittedFormWithSomeErrors]]
-          formatAllPackages(subscriptionAlreadyExists.map(_.pkg).sortBy(_.name.str))
+          // subscribed to. So we still list these as successfully processed
+          formatAllPackages(SanitizedList.fromList(subscriptionAlreadyExists.map(_.pkg)))
         )
       )
     } else if (subscriptionAlreadyExists.nonEmpty) {
       // We know this is safe because of the if check
       val nonEmptySubscriptionAlreadyExists = NonEmptyList.fromListUnsafe(subscriptionAlreadyExists)
-      successfullySubmittedFrom(nonEmptySubscriptionAlreadyExists.map(_.pkg).sortBy(_.name.str))
+      successfullySubmittedFrom(nonEmptySubscriptionAlreadyExists.map(_.pkg))
     } else {
       throw new Exception(
         s"This is a programmer bug! We should have included all possible non-empty " +
@@ -174,7 +171,7 @@ object HtmlGenerators {
     insertIntoBody(
       div(
         "You've submitted a request to subscribe to the following packages:",
-        formatAllPackages(packages.toList)
+        formatAllPackages(SanitizedList.fromList(packages.toList))
       )
     )
   }
