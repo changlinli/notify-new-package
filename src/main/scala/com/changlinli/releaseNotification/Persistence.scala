@@ -202,6 +202,11 @@ object Persistence extends CustomLogging {
       .updateWithLogHandler(doobieLogHandler)
   }
 
+  def searchForPackagesByExactName(name: String): doobie.Query0[(Int, String, String, Int, String)] = {
+    sql"""SELECT id, name, homepage, anityaId, currentVersion FROM `packages` WHERE name = $name"""
+      .queryWithLogHandler[(Int, String, String, Int, String)](doobieLogHandler)
+  }
+
   def searchForPackagesByNameFragmentQuery(nameFragment: String): doobie.Query0[(Int, String, String, Int, String)] = {
     sql"""SELECT id, name, homepage, anityaId, currentVersion FROM `packages` WHERE name LIKE ${s"%$nameFragment%"} LIMIT 10"""
       .queryWithLogHandler[(Int, String, String, Int, String)](doobieLogHandler)
@@ -223,18 +228,24 @@ object Persistence extends CustomLogging {
   }
 
   def searchForPackagesByNameFragment(nameFragment: String): ConnectionIO[List[FullPackage]] = {
-    searchForPackagesByNameFragmentQuery(nameFragment)
-      .to[List]
-      .map(_.map{
-        case (id, name, homepage, anityaId, currentVersion) =>
-          FullPackage(
-            name = PackageName(name),
-            homepage = homepage,
-            anityaId = anityaId,
-            packageId = id,
-            currentVersion = PackageVersion(currentVersion)
-          )
-      })
+    val searchForExactMatches = searchForPackagesByExactName(nameFragment).to[List]
+    val searchForPartialMatches = searchForPackagesByNameFragmentQuery(nameFragment).to[List]
+    for {
+      exactMatches <- searchForExactMatches
+      partialMatches <- searchForPartialMatches
+    } yield {
+      (exactMatches ++ partialMatches)
+        .map{
+          case (id, name, homepage, anityaId, currentVersion) =>
+            FullPackage(
+              name = PackageName(name),
+              homepage = homepage,
+              anityaId = anityaId,
+              packageId = id,
+              currentVersion = PackageVersion(currentVersion)
+            )
+        }
+    }
   }
 
   private def updatePackageVersionQuery(anityaId: AnityaId, newVersion: PackageVersion): doobie.Update0 = {

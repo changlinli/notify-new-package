@@ -98,7 +98,8 @@ object Main extends MyIOApp with Logging {
         .flatMap{
           _.traverse{
             pageOfResults =>
-              logger.info(s"About to persist this: $pageOfResults")
+              logger.info(s"About to persist ${pageOfResults.items.length} Anitya packages")
+              logger.debug(s"About to persist this: $pageOfResults")
               pageOfResults
                 .items
                 .traverse(Persistence.persistRawAnityaProject)
