@@ -235,6 +235,7 @@ object Persistence extends CustomLogging {
       partialMatches <- searchForPartialMatches
     } yield {
       (exactMatches ++ partialMatches)
+        .distinct
         .map{
           case (id, name, homepage, anityaId, currentVersion) =>
             FullPackage(
