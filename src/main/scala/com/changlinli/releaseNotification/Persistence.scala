@@ -3,7 +3,7 @@ package com.changlinli.releaseNotification
 import java.time.Instant
 
 import cats.Id
-import cats.data.{Ior, Kleisli, NonEmptyList}
+import cats.data.{Ior, IorT, Kleisli, NonEmptyList}
 import cats.effect.{Blocker, ContextShift, IO, Resource}
 import cats.implicits._
 import com.changlinli.releaseNotification.Main.DependencyUpdate
@@ -382,7 +382,7 @@ object Persistence extends CustomLogging {
         }
       }
       _ = logger.debug(
-        s"Email address ${email.str} subscribed to the these packages with unsubscribe " +
+        s"Email address ${email.str} subscribed to these packages with unsubscribe " +
           s"codes: $pkgsWithUnsubscribeCodes resulting in $insertedOrErr"
       )
       insertedPkgs = insertedOrErr.collect{case Right(pkgAndSubId) => pkgAndSubId}
@@ -398,12 +398,16 @@ object Persistence extends CustomLogging {
             createUnsubscribeCodeQuery(unsubscribeCode, subscriptionId).run
         }
     } yield {
-      insertedOrErr
-        .traverse{
-          case Left(err) => Ior.leftNel[SubscriptionAlreadyExists, FullPackage](err)
-          case Right((pkg, _)) => Ior.right[NonEmptyList[SubscriptionAlreadyExists], FullPackage](pkg)
+      val errors = insertedOrErr.collect{case Left(err) => err}
+      val successes = insertedOrErr.collect{case Right(pkg) => pkg}
+      NonEmptyList.fromList(errors) match {
+        case None => Ior.right(successes.length)
+        case Some(nonEmptyErrors) => if (successes.isEmpty) {
+          Ior.left(nonEmptyErrors)
+        } else {
+          Ior.both(nonEmptyErrors, successes.length)
         }
-        .map(_.length)
+      }
     }
   }
 

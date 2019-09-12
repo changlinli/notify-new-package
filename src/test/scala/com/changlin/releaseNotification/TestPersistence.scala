@@ -11,23 +11,33 @@ import com.changlinli.releaseNotification.data.{ConfirmationCode, EmailAddress, 
 import com.changlinli.releaseNotification.errors.SubscriptionAlreadyExists
 import com.changlinli.releaseNotification.ids.SubscriptionId
 import doobie.implicits._
-import doobie.scalatest.IOChecker
 import org.scalatest._
 import org.sqlite.SQLiteException
 
 import scala.concurrent.ExecutionContext
 
-class TestPersistence extends FlatSpec with Matchers with IOChecker {
+class TestPersistence extends FlatSpec with Matchers with BeforeAndAfterAll {
   private val threadPool = Executors.newFixedThreadPool(4)
   private val executionContext = ExecutionContext.fromExecutor(threadPool)
-  private val connectionExecutionContext = ExecutionContext.fromExecutor(Executors.newFixedThreadPool(4))
+  private val connectionThreadPool = Executors.newFixedThreadPool(4)
+  private val connectionExecutionContext = ExecutionContext.fromExecutor(connectionThreadPool)
+  private val blockerThreadPool = Executors.newCachedThreadPool
   private val blocker: Blocker = Blocker.liftExecutionContext(
     scala.concurrent.ExecutionContext.fromExecutorService(
-      Executors.newCachedThreadPool
+      blockerThreadPool
     )
   )
 
   implicit val contextSwitch: ContextShift[IO] = IO.contextShift(executionContext)
+
+  val transactor: doobie.Transactor[IO] = Persistence.createTransactorRaw(":memory:", connectionExecutionContext, blocker)
+
+  override def afterAll(): Unit = {
+    threadPool.shutdown()
+    connectionThreadPool.shutdown()
+    blockerThreadPool.shutdown()
+  }
+
 
   "Inserting a subscription" should "blow up with a failure if the package does not exist" in {
     val action = for {
@@ -198,5 +208,4 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
     action.transact(transactor).unsafeRunSync().map{case (_, _, _, anityaId, currentVersion) => (anityaId, currentVersion)} should be (List((1, "2.0")))
   }
 
-  override def transactor: doobie.Transactor[IO] = Persistence.createTransactorRaw(":memory:", connectionExecutionContext, blocker)
 }
