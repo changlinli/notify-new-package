@@ -1,0 +1,8 @@
+package com.changlinli.releaseNotification.errors
+
+sealed trait SubscribeToPackagesError
+case object PackagesKeyNotFound extends SubscribeToPackagesError
+case object NoPackagesSelected extends SubscribeToPackagesError
+case object EmailAddressKeyNotFound extends SubscribeToPackagesError
+final case class AnityaIdFieldNotValidInteger(idStr: String) extends SubscribeToPackagesError
+final case class EmailAddressIncorrectFormat(candidateEmailStr: String) extends SubscribeToPackagesError

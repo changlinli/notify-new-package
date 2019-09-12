@@ -1,9 +1,8 @@
 package com.changlinli.releaseNotification
 
 import cats.data.NonEmptyList
-import com.changlinli.releaseNotification.WebServer.{AnityaIdFieldNotValidInteger, EmailAddressIncorrectFormat, EmailAddressKeyNotFound, NoPackagesSelected, PackagesKeyNotFound, SubscribeToPackagesError}
 import com.changlinli.releaseNotification.data.{ConfirmationCode, FullPackage, SanitizedList, UnsubscribeCode}
-import com.changlinli.releaseNotification.errors.RequestProcessError
+import com.changlinli.releaseNotification.errors._
 import scalatags.Text
 import scalatags.Text.all._
 

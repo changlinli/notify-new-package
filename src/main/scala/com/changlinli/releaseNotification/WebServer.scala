@@ -1,50 +1,32 @@
 package com.changlinli.releaseNotification
 
 import java.time.Instant
-import java.util.concurrent.TimeUnit
 
 import cats.data._
 import cats.effect.{Blocker, ContextShift, Effect, IO, Timer}
 import cats.implicits._
 import com.changlinli.releaseNotification.data._
-import com.changlinli.releaseNotification.errors.{AnityaProjectJsonWasInUnexpectedFormat, HumanReadableException, NoPackagesFoundForAnityaId, RequestProcessError, SubscriptionAlreadyExists}
-import com.changlinli.releaseNotification.ids.{AnityaId, SubscriptionId}
+import com.changlinli.releaseNotification.errors.{AnityaIdFieldNotValidInteger, EmailAddressIncorrectFormat, EmailAddressKeyNotFound, NoPackagesFoundForAnityaId, NoPackagesSelected, PackagesKeyNotFound, RequestProcessError, SubscribeToPackagesError, SubscriptionAlreadyExists}
+import com.changlinli.releaseNotification.ids.AnityaId
 import doobie.free.connection.ConnectionIO
 import doobie.implicits._
 import doobie.util.transactor.Transactor
-import io.circe._
 import io.circe.syntax._
 import org.http4s.Uri.{Authority, Host, RegName, Scheme}
 import org.http4s._
 import org.http4s.circe._
-import org.http4s.client.Client
 import org.http4s.dsl.io._
 import org.http4s.implicits._
 import org.http4s.scalatags._
 import org.http4s.server.Router
 import org.http4s.server.blaze.BlazeServerBuilder
 
-import scala.concurrent.duration.FiniteDuration
 import scala.language.higherKinds
 
 object WebServer extends CustomLogging {
 
-  sealed trait Action
-  sealed trait EmailAction extends Action
-  final case class UnsubscribeEmailFromPackage(email: EmailAddress, pkg: PackageName) extends EmailAction with PersistenceAction
-  final case class UnsubscribeEmailFromAllPackages(email: EmailAddress) extends EmailAction with PersistenceAction
-  final case class ChangeEmail(oldEmail: EmailAddress, newEmail: EmailAddress) extends EmailAction with PersistenceAction
+  final case class SubscribeToPackages(email: EmailAddress, pkgs: NonEmptyList[AnityaId])
 
-  sealed trait SubscribeToPackagesError
-  case object PackagesKeyNotFound extends SubscribeToPackagesError
-  case object NoPackagesSelected extends SubscribeToPackagesError
-  case object EmailAddressKeyNotFound extends SubscribeToPackagesError
-  final case class AnityaIdFieldNotValidInteger(idStr: String) extends SubscribeToPackagesError
-  final case class EmailAddressIncorrectFormat(candidateEmailStr: String) extends SubscribeToPackagesError
-
-  sealed trait WebAction
-  final case class UnsubscribeUsingCode(code: UnsubscribeCode) extends WebAction
-  final case class SubscribeToPackages(email: EmailAddress, pkgs: NonEmptyList[AnityaId]) extends WebAction
   object SubscribeToPackages {
     def fromUrlForm(urlForm: UrlForm): Either[SubscribeToPackagesError, SubscribeToPackages] = {
       for {
@@ -66,19 +48,6 @@ object WebServer extends CustomLogging {
       } yield SubscribeToPackages(emailAddress, packages.map(AnityaId.apply))
     }
   }
-
-  sealed trait PersistenceAction
-
-  final case class SubscribeToPackagesFullName(email: EmailAddress, pkgs: NonEmptyList[FullPackage]) extends PersistenceAction
-
-  def emailActionToPersistenceAction(emailAction: EmailAction): PersistenceAction = emailAction match {
-    case unsubscribe: UnsubscribeEmailFromPackage => unsubscribe
-    case unsubscribeFromAll: UnsubscribeEmailFromAllPackages => unsubscribeFromAll
-    case changeEmail: ChangeEmail => changeEmail
-  }
-
-  type ErrorTIO[A] = EitherT[IO, RequestProcessError, A]
-
 
   def getFullPackagesFromSubscribeToPackages(
     email: EmailAddress,
@@ -199,14 +168,6 @@ object WebServer extends CustomLogging {
     request.as[String].flatMap{
       emailToAdmin(emailSender, adminEmailAddress, _)
     }
-  }
-
-  def processInboundWebhook[F[_] : Effect](request: Request[F]): F[EmailAction] = {
-    logger.info(s"Processing incoming email: $request")
-    request.as[String].flatMap{
-      body => Effect[F].delay(s"Body: $body")
-    }
-    Effect[F].delay(UnsubscribeEmailFromAllPackages(EmailAddress.unsafeFromString("hello@hello.com")))
   }
 
   def staticRoutes(blocker: Blocker)(implicit contextShift: ContextShift[IO]): HttpRoutes[IO] =
@@ -398,78 +359,6 @@ object WebServer extends CustomLogging {
        |Current Version: ${pkg.currentVersion.str}
        |release-monitoring.org link (see the bottom of this email): ${releaseMonitoringLink.renderString}
      """.stripMargin
-  }
-
-  private def emailSomeSubscriptionAlreadyExistsSomeSubscriptionsAreNewConfirmationRequest(
-    emailSender: EmailSender,
-    emailAddress: EmailAddress,
-    packagesWithoutExistingSubscriptions: NonEmptyList[(FullPackage, UnsubscribeCode)],
-    packagesWithExistingSubscriptions: NonEmptyList[SubscriptionAlreadyExists],
-    confirmationCode: ConfirmationCode,
-    publicSiteName: Authority
-  ): IO[Unit] = {
-    val packagesAlreadySignedUp = packagesWithExistingSubscriptions.filter{err => err.confirmedTime.isDefined}
-    val packagesPendingConfirmation = packagesWithExistingSubscriptions.filter{err => err.confirmedTime.isEmpty}
-
-    val alreadySignedUpForMessage = {
-      s"Some of these subscription requests concern packages you've already successfully signed up for:\n\n" +
-        s"${packagesAlreadySignedUp
-          .map{err => (err.pkg, err.packageUnsubscribeCode)}
-          .map{case (p, unsubscribeCode) => printPackageWithUnsubscribe(p, unsubscribeCode, publicSiteName)}
-          .mkString("\n\n")}"
-    }
-    val packagesPendingConfirmMessage = {
-      s"Some of these subscriptions concern packages that are still awaiting confirmation:\n\n" +
-        s"${packagesPendingConfirmation
-          .map{err => (err.pkg, err.packageUnsubscribeCode, err.confirmationCode)}
-          .map{case (p, unsubscribeCode, confirmCode) => printPackageWithConfirmationCode(p, unsubscribeCode, publicSiteName, confirmCode)}
-          .mkString("\n\n")
-        }"
-    }
-    val newPackagesMessages = {
-      s"Some of these packages are new requests for subscriptions:\n\n" +
-        s"${packagesWithoutExistingSubscriptions
-          .map{case (p, unsubscribeCode) => printPackageWithUnsubscribe(p, unsubscribeCode, publicSiteName)}
-          .mkString("\n\n")
-        }"
-    }
-    val content =
-      s"""Hi, we've received a request to sign you up for email updates for some packages.
-         |
-         |However, it appears that you've already previously sent a request to sign up for email updates for some of these packages.
-         |
-         |${if (packagesAlreadySignedUp.nonEmpty) alreadySignedUpForMessage else ""}
-         |${if (packagesPendingConfirmation.nonEmpty) packagesPendingConfirmMessage else ""}
-         |$newPackagesMessages
-         |
-         |If these requests were from you, please confirm by opening this page in your web browser: ${confirmationCode.generateConfirmationUri(publicSiteName).renderString}.
-         |
-         |${
-        if (packagesPendingConfirmation.nonEmpty) {
-          "Note that this code only confirms you for these new subscriptions! " +
-            "If you have any pre-existing subscription requests that have yet to " +
-            "be confirmed should be confirmed by entering the links in the above " +
-            "listing of packages awaiting confirmation."
-        } else {
-          ""
-        }
-      }
-         |
-         |If that was not you, you can either ignore this email, or send an email to admin@${publicSiteName.host.renderString} if you'd like us to look into someone entering your email address without your permission.
-         |
-         |In the future if you'd like to unsubscribe to updates for a particular package, simply entering any of those unsubscribe links into your web browser will do the trick.
-         |
-         |Ultimately this service is built on top of Fedora's Anitya project (release-monitoring.org), so we've included a link to the release-monitoring.org page for this package.
-       """.stripMargin
-    val allPackageNames = packagesWithExistingSubscriptions
-      .map(_.pkg)
-      .++(packagesWithoutExistingSubscriptions.map(_._1).toList)
-      .map(_.name.str)
-    emailSender.email(
-      to = emailAddress,
-      subject = s"Request to sign you up for notifications about ${allPackageNames.mkString(",")}",
-      content = content
-    )
   }
 
   private def emailSubscriptionAlreadyExistsConfirmationRequest(
