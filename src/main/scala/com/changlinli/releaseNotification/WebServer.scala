@@ -6,7 +6,6 @@ import java.util.concurrent.TimeUnit
 import cats.data._
 import cats.effect.{Blocker, ContextShift, Effect, IO, Timer}
 import cats.implicits._
-import cats.kernel.Semigroup
 import com.changlinli.releaseNotification.data._
 import com.changlinli.releaseNotification.ids.{AnityaId, SubscriptionId}
 import doobie.free.connection.ConnectionIO
@@ -204,19 +203,31 @@ object WebServer extends CustomLogging {
     packageUnsubscribeCode: UnsubscribeCode,
     confirmationCode: ConfirmationCode,
     confirmedTime: Option[Instant]
-  )
-  final case class SubscriptionsAlreadyExistErr(
-    allSubscriptionsThatAlreadyExist: NonEmptyList[SubscriptionAlreadyExists]
   ) extends RequestProcessError {
     override val humanReadableMessage: String =
-      s"Subscriptions already exist for the following package ID, package name, subscription ID, and email addresses: " +
-        s"${allSubscriptionsThatAlreadyExist
-          .map(sub => s"Package ID: ${sub.subscriptionId.toInt}, Package name: ${sub.pkg.name}, Subscription ID: ${sub.subscriptionId.toInt}, Email: ${sub.emailAddress.str}")}"
+      s"A subscription already exists for the following package ID, package name, subscription ID, and email addresses: " +
+        s"Package ID: ${subscriptionId.toInt}, Package name: ${pkg.name}, Subscription ID: ${subscriptionId.toInt}, Email: ${emailAddress.str}"
   }
-  final case class NoPackagesFoundForAnityaIds(anityaIds: NonEmptyList[AnityaId]) extends RequestProcessError {
+  final case class NoPackagesFoundForAnityaId(anityaId: AnityaId) extends RequestProcessError {
     override val humanReadableMessage: String =
-      s"We were unable to find any packages corresponding to the following anitya IDs: ${anityaIds.map(_.toInt.toString).mkString(",")}"
+      s"We were unable to find any packages corresponding to the following anitya ID: ${anityaId.toInt}"
   }
+
+  object RequestProcessError {
+    def splitErrors(errors: List[RequestProcessError]): (List[SubscriptionAlreadyExists], List[NoPackagesFoundForAnityaId]) = {
+      errors.foldLeft((List.empty[SubscriptionAlreadyExists], List.empty[NoPackagesFoundForAnityaId])){
+        case ((subscriptionAlreadyExistsErrs, noPackagesFoundForAnityaIdErrs), newErr) =>
+          newErr match {
+            case subscriptionAlreadyExistsErr: SubscriptionAlreadyExists =>
+              (subscriptionAlreadyExistsErr :: subscriptionAlreadyExistsErrs, noPackagesFoundForAnityaIdErrs)
+            case noPackagesFoundErr: NoPackagesFoundForAnityaId =>
+              (subscriptionAlreadyExistsErrs, noPackagesFoundErr :: noPackagesFoundForAnityaIdErrs)
+          }
+      }
+    }
+
+  }
+
   final case class AnityaProjectJsonWasInUnexpectedFormat(json: Json, error: DecodingFailure) extends HumanReadableException {
     override val humanReadableMessage: String =
       s"The JSON passed ($json) in failed to decode properly. We saw the following error: ${error.message}"
@@ -225,7 +236,7 @@ object WebServer extends CustomLogging {
   def getFullPackagesFromSubscribeToPackages(
     email: EmailAddress,
     anityaIds: NonEmptyList[AnityaId]
-  ): ConnectionIO[Ior[NoPackagesFoundForAnityaIds, NonEmptyList[FullPackage]]] = {
+  ): ConnectionIO[Ior[NonEmptyList[NoPackagesFoundForAnityaId], NonEmptyList[FullPackage]]] = {
     Persistence.retrievePackages(anityaIds)
       .map{
         anityaIdToFullPackage =>
@@ -235,21 +246,21 @@ object WebServer extends CustomLogging {
             case (_, Some(fullPackage)) =>
               Ior.Right(NonEmptyList.of(fullPackage))
             case (anityaId, None) =>
-              Ior.Left(NoPackagesFoundForAnityaIds(NonEmptyList.of(anityaId)))
+              Ior.Left(NonEmptyList.of(NoPackagesFoundForAnityaId(anityaId)))
           }
           anityaIdToFullPackageOpt.tail.foldLeft(firstElem){
             case (Ior.Both(noPackagesFound, subscribeToPackagesFullName), (_, Some(fullPackage))) =>
               Ior.Both(noPackagesFound, fullPackage :: subscribeToPackagesFullName)
             case (Ior.Both(noPackagesFound, subscribeToPackagesFullName), (anityaId, None)) =>
-              Ior.Both(noPackagesFound.copy(anityaIds = anityaId :: noPackagesFound.anityaIds), subscribeToPackagesFullName)
+              Ior.Both(NoPackagesFoundForAnityaId(anityaId) :: noPackagesFound, subscribeToPackagesFullName)
             case (Ior.Right(subscribeToPackagesFullName), (_, Some(fullPackage))) =>
               Ior.Right(fullPackage :: subscribeToPackagesFullName)
             case (Ior.Right(subscribeToPackagesFullName), (anityaId, None)) =>
-              Ior.Both(NoPackagesFoundForAnityaIds(NonEmptyList.of(anityaId)), subscribeToPackagesFullName)
+              Ior.Both(NonEmptyList.of(NoPackagesFoundForAnityaId(anityaId)), subscribeToPackagesFullName)
             case (Ior.Left(noPackagesFound), (_, Some(fullPackage))) =>
               Ior.Both(noPackagesFound, NonEmptyList.of(fullPackage))
             case (Ior.Left(noPackagesFound), (anityaId, None)) =>
-              Ior.Left(noPackagesFound.copy(anityaIds = anityaId :: noPackagesFound.anityaIds))
+              Ior.Left(NoPackagesFoundForAnityaId(anityaId) :: noPackagesFound)
           }
       }
   }
@@ -260,62 +271,47 @@ object WebServer extends CustomLogging {
 
   def processDatabaseResponse(
     email: EmailAddress,
-    resultOfSubscribe: Ior[RequestProcessError, (NonEmptyList[(FullPackage, UnsubscribeCode)], ConfirmationCode)],
+    resultOfSubscribe: Ior[NonEmptyList[RequestProcessError], SuccessfulSubscriptionResult],
     emailSender: EmailSender,
     publicSiteName: Authority
   ): IO[Response[IO]] = {
     resultOfSubscribe match {
-      case Ior.Both(err @ NoPackagesFoundForAnityaIds(_), (pkgsWithUnsubscribeCodes, confirmationCode)) =>
+      case Ior.Both(err, SuccessfulSubscriptionResult(pkgsWithUnsubscribeCodes, confirmationCode)) =>
         val emailAction = emailSubscriptionConfirmationRequest(
           emailSender,
           email,
-          pkgsWithUnsubscribeCodes,
+          pkgsWithUnsubscribeCodes.map(singleSubscription => (singleSubscription.pkg, singleSubscription.unsubscribeCode)),
           confirmationCode,
           publicSiteName
         )
-        IO(logger.warn("A request for non-existent Anitya IDs was received.", err))
+        IO(err.map(logger.warn("We saw the following error by a user", _)))
           .>>(emailAction)
-          .>>(Ok(HtmlGenerators.submittedFormWithSomeErrors(pkgsWithUnsubscribeCodes.map(_._1), err)))
-      case Ior.Both(err @ SubscriptionsAlreadyExistErr(alreadyExists), (pkgsWithUnsubscribeCodes, confirmationCode)) =>
-        // We're going to pretend that nothing went wrong with the HTTP response so that malicious users
-        // can't find out what packages an email address is subscribed to and
-        // we're just going to send a modified confirmation email
-        val emailAction = emailSomeSubscriptionAlreadyExistsSomeSubscriptionsAreNewConfirmationRequest(
-          emailSender,
-          email,
-          pkgsWithUnsubscribeCodes,
-          alreadyExists,
-          confirmationCode,
-          publicSiteName
-        )
-        IO(logger.warn("A user asked to subscribe to something he/she is already subscribed to", err))
+          .>>(Ok(HtmlGenerators.submittedFormWithSomeErrors(pkgsWithUnsubscribeCodes.map(_.pkg), err)))
+      case Ior.Left(err) =>
+        val (alreadyExists, _) = RequestProcessError.splitErrors(err.toList)
+        val emailAction = NonEmptyList.fromList(alreadyExists).fold(IO.unit){
+          emailSubscriptionAlreadyExistsConfirmationRequest(
+            emailSender,
+            email,
+            _,
+            publicSiteName
+          )
+        }
+        IO(err.map(logger.warn("We saw the following error by a user", _)))
           .>>(emailAction)
-          .>>(Ok(HtmlGenerators.successfullySubmittedFrom(pkgsWithUnsubscribeCodes.map(_._1))))
-      case Ior.Left(err @ NoPackagesFoundForAnityaIds(_)) =>
-        logger.info(s"User sent in request that failed", err)
-        BadRequest(s"You failed! ${err.humanReadableMessage}")
-      case Ior.Left(err @ SubscriptionsAlreadyExistErr(alreadyExists)) =>
-        val emailAction = emailSubscriptionAlreadyExistsConfirmationRequest(
-          emailSender,
-          email,
-          alreadyExists,
-          publicSiteName
-        )
-        logger.info(s"User sent in request that failed", err)
-        emailAction
           // Note that we're not going to let a malicious user find out what
           // packages an email address is subscribed to, so we're just
           // returning an OK that seems to indicate everything was fine
-          .>>(Ok(HtmlGenerators.successfullySubmittedFrom(alreadyExists.map(_.pkg))))
-      case Ior.Right((pkgsWithUnsubscribeCodes, confirmationCode)) =>
+          .>>(Ok(HtmlGenerators.submittedFormWithErrors(err)))
+      case Ior.Right(SuccessfulSubscriptionResult(pkgsWithUnsubscribeCodes, confirmationCode)) =>
         val emailAction = emailSubscriptionConfirmationRequest(
           emailSender,
           email,
-          pkgsWithUnsubscribeCodes,
+          pkgsWithUnsubscribeCodes.map(singleSubscription => (singleSubscription.pkg, singleSubscription.unsubscribeCode)),
           confirmationCode,
           publicSiteName
         )
-        emailAction.>>(Ok(HtmlGenerators.successfullySubmittedFrom(pkgsWithUnsubscribeCodes.map(_._1))))
+        emailAction.>>(Ok(HtmlGenerators.successfullySubmittedFrom(pkgsWithUnsubscribeCodes.map(_.pkg))))
     }
   }
 
@@ -324,16 +320,12 @@ object WebServer extends CustomLogging {
     anityaIdsWithUnsubscribeCodes: NonEmptyList[(AnityaId, UnsubscribeCode)],
     currentTime: Instant,
     confirmationCode: ConfirmationCode
-  ): ConnectionIO[Ior[RequestProcessError, (NonEmptyList[(FullPackage, UnsubscribeCode)], ConfirmationCode)]] = {
+  ): ConnectionIO[Ior[NonEmptyList[RequestProcessError], SuccessfulSubscriptionResult]] = {
     val unsubscribeCodes = anityaIdsWithUnsubscribeCodes.map(_._2)
     val getFullPackages = getFullPackagesFromSubscribeToPackages(
       email,
       anityaIdsWithUnsubscribeCodes.map(_._1)
     )
-    implicit val semigroupLeft: Semigroup[RequestProcessError] =
-      Semigroup.instance[RequestProcessError]{
-        (a, _) => a
-      }
     IorT(getFullPackages)
       .map(fullPackages => fullPackages.zipWith(unsubscribeCodes)((_, _)))
       .flatMap{
@@ -345,10 +337,13 @@ object WebServer extends CustomLogging {
             confirmationCode
           )
           IorT(subscription)
-            .leftWiden[RequestProcessError]
+            .leftWiden[NonEmptyList[RequestProcessError]]
             .as(pkgsWithCode)
+            .map(_.map{
+              case (pkg, unsubscribeCode) => SuccessfulSinglePackageSubscription(pkg, unsubscribeCode)
+            })
       }
-      .map((_, confirmationCode))
+      .map(SuccessfulSubscriptionResult(_, confirmationCode))
       .value
   }
 

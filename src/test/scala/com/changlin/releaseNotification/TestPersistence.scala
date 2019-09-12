@@ -7,7 +7,7 @@ import cats.data.{Ior, NonEmptyList}
 import cats.effect.{Blocker, ContextShift, IO}
 import com.changlinli.releaseNotification.Main.DependencyUpdate
 import com.changlinli.releaseNotification.Persistence
-import com.changlinli.releaseNotification.WebServer.{SubscriptionAlreadyExists, SubscriptionsAlreadyExistErr}
+import com.changlinli.releaseNotification.WebServer.SubscriptionAlreadyExists
 import com.changlinli.releaseNotification.data.{ConfirmationCode, EmailAddress, FullPackage, PackageName, PackageVersion, UnsubscribeCode}
 import com.changlinli.releaseNotification.ids.SubscriptionId
 import doobie.implicits._
@@ -94,16 +94,14 @@ class TestPersistence extends FlatSpec with Matchers with IOChecker {
       )
     } yield secondResult
     val expectedResult = Ior.Left(
-      SubscriptionsAlreadyExistErr(
-        NonEmptyList.of(
-          SubscriptionAlreadyExists(
-            subscriptionId = SubscriptionId(1),
-            pkg = fullPackage,
-            emailAddress = email,
-            packageUnsubscribeCode = UnsubscribeCode.unsafeFromString("unsubscribeString0"),
-            confirmationCode = ConfirmationCode.unsafeFromString("confirm"),
-            confirmedTime = None
-          )
+      NonEmptyList.of(
+        SubscriptionAlreadyExists(
+          subscriptionId = SubscriptionId(1),
+          pkg = fullPackage,
+          emailAddress = email,
+          packageUnsubscribeCode = UnsubscribeCode.unsafeFromString("unsubscribeString0"),
+          confirmationCode = ConfirmationCode.unsafeFromString("confirm"),
+          confirmedTime = None
         )
       )
     )

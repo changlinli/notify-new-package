@@ -326,7 +326,7 @@ object Persistence extends CustomLogging {
     pkgsWithUnsubscribeCodes: NonEmptyList[(FullPackage, UnsubscribeCode)],
     currentTime: Instant,
     confirmationCode: ConfirmationCode
-  ): ConnectionIO[Ior[SubscriptionsAlreadyExistErr, Int]] = {
+  ): ConnectionIO[Ior[NonEmptyList[SubscriptionAlreadyExists], Int]] = {
     val pkgs = pkgsWithUnsubscribeCodes.map(_._1)
     val retrieveEmailId =
       sql"""SELECT `id` FROM `emails` WHERE emailAddress = ${email.str}"""
@@ -381,7 +381,7 @@ object Persistence extends CustomLogging {
           case Left(err) => Ior.leftNel[SubscriptionAlreadyExists, FullPackage](err)
           case Right(pkg) => Ior.right[NonEmptyList[SubscriptionAlreadyExists], FullPackage](pkg)
         }
-        .map(_.length).leftMap(SubscriptionsAlreadyExistErr.apply)
+        .map(_.length)
     }
   }
 
