@@ -14,7 +14,7 @@ a new version, or maybe you're a developer who wants to know when the newest
 version of a dependency has been released. Or maybe you're just a user of
 software who'd like to know when a new version has come out.
 
-## Why do I see .pem files committed? Is this a security vulnerability?
+## Why do I see .pem and .pfx files committed? Is this a security vulnerability?
 
 These are publicly made available by Fedora to allow for connecting to their
 public instance of AMQP brokers. So no, they're meant to be public and are
