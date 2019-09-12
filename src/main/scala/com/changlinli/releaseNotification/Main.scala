@@ -35,11 +35,21 @@ object Main extends MyIOApp with Logging {
     automaticRecovery = true
   )
 
+  /**
+    * This may look terrifying, but note that everything in `truststore.pfx`
+    * is public data! Namely these are private and public keys that Fedora
+    * has intentionally made publicly available to be able to securely connect
+    * to its AMQP brokers.
+    *
+    * Hence there is no need to try to keep this secret.
+    */
+  val hardcodedPasswordYesThisIsSafe: String = "PASSWORD"
+
   val readKeyStore: IO[KeyStore] = {
     IO{
       val keyStoreStream = new FileInputStream("truststore.pfx")
       val keyStore = KeyStore.getInstance("PKCS12")
-      keyStore.load(keyStoreStream, "PASSWORD".toCharArray)
+      keyStore.load(keyStoreStream, hardcodedPasswordYesThisIsSafe.toCharArray)
       keyStore
     }
   }
@@ -57,7 +67,7 @@ object Main extends MyIOApp with Logging {
   val createSSLContext: IO[SSLContext] = {
     readKeyStore.flatMap{keyStore => IO{
       val keyManagerFactory = KeyManagerFactory.getInstance("SunX509")
-      keyManagerFactory.init(keyStore, "PASSWORD".toCharArray)
+      keyManagerFactory.init(keyStore, hardcodedPasswordYesThisIsSafe.toCharArray)
       val sslContext = SSLContext.getInstance("TLS")
       val tmf = TrustManagerFactory.getInstance("SunX509")
       tmf.init(keyStore)
