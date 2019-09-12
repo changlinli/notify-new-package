@@ -183,7 +183,6 @@
           const listElementContents = createListElementFromSearchResult(element);
           listElement.appendChild(listElementContents);
           listElement.appendChild(createSubscribeButton(element));
-          listElement.appendChild(createUnsubscribeButton(element));
           newList.appendChild(listElement);
         });
         searchResultsDiv.appendChild(newList);
