@@ -112,11 +112,13 @@ object RabbitMQListener extends CustomLogging {
   )(implicit contextShift: ContextShift[IO]): fs2.Stream[IO, Unit] = {
     stream
       .map(parseEnvelope)
-      .evalTap(dependencyUpdateOrErr => IO(logger.info(
-        s"[DEPENDENCY UPDATE] We received an upstream dependency update that looked like the following: $dependencyUpdateOrErr"
-      )))
       .evalMap{
-        case Right(value) => processJsonPayloadResult(value, doobieTransactor, emailSender)
+        case Right(value) =>
+          IO(logger.info(
+            s"[DEPENDENCY UPDATE] We received an upstream dependency update that looked like the following: $value"
+          )).>>{
+            processJsonPayloadResult(value, doobieTransactor, emailSender)
+          }
         case Left(PayloadParseFailure(decodeError, json)) => IO(logger.warn(s"We saw this payload parse error!: $decodeError\n$json"))
         case Left(IncorrectRoutingKey(incorrectRoutingKey)) => IO(logger.debug(s"Ignoring this routing key... $incorrectRoutingKey"))
       }
