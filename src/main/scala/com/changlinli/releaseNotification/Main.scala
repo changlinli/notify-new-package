@@ -126,10 +126,10 @@ object Main extends MyIOApp with Logging {
   }
 
   override def run(args: List[String]): IO[ExitCode] = for {
-    _ <- IO(System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "DEBUG"))
+    cmdLineOpts <- ServiceConfiguration.parseCommandLineOptions(args)
+    _ <- IO(System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, LogLevel.toSLF4JString(cmdLineOpts.logLevel)))
     _ <- IO(System.setProperty(org.slf4j.impl.SimpleLogger.SHOW_DATE_TIME_KEY, "true"))
     _ <- IO(System.setProperty(org.slf4j.impl.SimpleLogger.DATE_TIME_FORMAT_KEY, "yyyy-MM-dd'T'HH:mm:ss.SSSZ"))
-    cmdLineOpts <- ServiceConfiguration.parseCommandLineOptions(args)
     _ <- IO(logger.info(s"These are the commandline options we parsed: $cmdLineOpts"))
     emailSender <- EmailSender.initialize(cmdLineOpts.urlOfSite.host, cmdLineOpts.sendGridAPIKey)
     fs2Rabbit <- generateFs2Rabbit

@@ -22,6 +22,33 @@ sealed trait PackageDatabaseOption
 case object RecreatePackageDatabaseFromBulkDownload extends PackageDatabaseOption
 case object DoNotBulkDownloadPackageDatabase extends PackageDatabaseOption
 
+sealed trait LogLevel
+case object Quiet extends LogLevel
+case object Normal extends LogLevel
+case object Verbose extends LogLevel
+case object VeryVerbose extends LogLevel
+
+object LogLevel {
+  def fromInt(int: Int): LogLevel = {
+    if (int <= 0) {
+      Quiet
+    } else if (int == 1) {
+      Normal
+    } else if (int == 2) {
+      Verbose
+    } else {
+      VeryVerbose
+    }
+  }
+
+  def toSLF4JString(logLevel: LogLevel): String = logLevel match {
+    case Quiet => "WARN"
+    case Normal => "INFO"
+    case Verbose => "DEBUG"
+    case VeryVerbose => "TRACE"
+  }
+}
+
 final case class ServiceConfiguration(
   databaseFile: String = "sample.db",
   bindPortNumber: Int = 8080,
@@ -32,7 +59,8 @@ final case class ServiceConfiguration(
   rebuildPackageDatabase: PackageDatabaseOption = DoNotBulkDownloadPackageDatabase,
   adminEmailRedirect: EmailAddress = EmailAddress.unsafeFromString("example@example.com"),
   sendGridAPIKey: String = "unknownApiKey",
-  rabbitMQQueueName: QueueName = QueueName("00000000-0000-0000-0000-000000000000")
+  rabbitMQQueueName: QueueName = QueueName("00000000-0000-0000-0000-000000000000"),
+  logLevel: LogLevel = Normal
 )
 
 object ServiceConfiguration {
@@ -43,6 +71,10 @@ object ServiceConfiguration {
   }
   val cmdLineOptionParser: OptionParser[ServiceConfiguration] = new scopt.OptionParser[ServiceConfiguration]("notify-new-package") {
     head("notify-new-package", "0.0.1")
+
+    opt[Int]('l', "log-level")
+      .action{(logLevelInt, config) => config.copy(logLevel = LogLevel.fromInt(logLevelInt))}
+      .text("The log level you wish this service to run at. 0 and below is quiet, 1 is normal, 2 is verbose, and 3 and above is very verbose.")
 
     opt[String]('q', "rabbitmq-queue-name")
       .required()
