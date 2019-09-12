@@ -170,7 +170,7 @@ object HtmlGenerators {
   def successfullySubmittedFrom(packages: NonEmptyList[FullPackage]): Text.TypedTag[String] = {
     insertIntoBody(
       div(
-        "You've submitted a request to subscribe to the following packages:",
+        "You've submitted a request to subscribe to the following packages. Please check your email inbox for a confirmation email.",
         formatAllPackages(SanitizedList.fromList(packages.toList))
       )
     )
