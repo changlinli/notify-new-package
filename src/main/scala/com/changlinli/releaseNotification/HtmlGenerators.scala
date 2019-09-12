@@ -85,7 +85,7 @@ object HtmlGenerators {
         s"Package homepage: ${pkg.homepage}"
       ),
       li(
-        s"Anitya ID: ${pkg.anityaId}"
+        s"Anitya ID: https://release-monitoring.org/project/${pkg.anityaId}"
       ),
       li(
         s"Current Version: ${pkg.currentVersion.str}"
